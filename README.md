@@ -1,62 +1,31 @@
 # easyssh
 
-Make ssh easy. One tool — `essh` — instead of memorizing `ssh`, `ssh-keygen`,
-`ssh-copy-id`, `scp` and `sshfs` (and hand-editing `~/.ssh/config`).
-
-`essh` is a **smart frontend, not a reimplementation**: it shells out to the real
-tools, so ssh-agent, your keys, and your existing `~/.ssh/config` all just work.
-
-## Install
+**Make ssh easy.** One command — `essh` — for connecting, keys, tunnels, mounts
+and copies. It shells out to the real ssh tools, so your config, agent and keys
+just work.
 
 ```sh
-cargo install easyssh      # installs the `essh` command
+cargo install easyssh          # installs `essh`
+
+essh                 # open the toolbox (TUI)
+essh raspi           # connect — any unknown word is an ssh destination
+essh ls              # list hosts from ~/.ssh/config
+essh cp file raspi:~ # scp, but the alias is enough (auto -r for dirs)
 ```
 
-## The idea
+## The toolbox (bare `essh`)
 
-The whole point is *"I never remember the commands."* So the **CLI holds only
-what's faster to type than to click**; everything you'd otherwise have to look up
-lives in the **TUI**, where there's nothing to memorize.
-
-## CLI
-
-```sh
-essh                    # open the toolbox (TUI)
-essh <host> [ssh args]  # connect — any unknown word is an ssh destination
-essh ls [-v]            # list every host in ~/.ssh/config
-essh cp <src…> <dst>    # scp with alias:path shorthand and auto -r
-```
-
-`essh ls` replaces the classic `grep '^Host' ~/.ssh/config` alias. `essh cp
-notes.md raspi:~` beats `scp notes.md user@host:~` — the config alias is enough,
-and directories get `-r` automatically.
-
-## TUI (bare `essh`)
-
-Three tabs — **Hosts**, **Keys**, **Tunnels** — plus wizards for the things
+Tabs for **Hosts**, **Keys** and **Tunnels**, with wizards for the commands
 nobody remembers:
 
-- **Hosts** — `↵` connect · `n` new host · `m` mount (sshfs) · `t` forward a
-  remote port to you · `T` expose a local port on the host
-- **Keys** — `n` new ed25519 key · `c` copy a key to a host (ssh-copy-id)
-- **Tunnels** — live port-forwards you can actually see and `d` kill (raw ssh
-  can't show you this)
+- **Hosts** — `n` add · `m` mount (sshfs) · `t`/`T` forward/expose a port
+- **Keys** — `n` new ed25519 · `c` copy to a host (ssh-copy-id)
+- **Tunnels** — see live port-forwards and `d` kill them
 
-Port forwards are spawned detached and tracked, so `-L port:host:port` becomes
-two plain-English questions.
+Vim keys (`hjkl`, arrows too); inside a wizard, fields move with `Ctrl-j/k`.
 
-### Keys (vim-first, arrows work too)
-
-- Move: `j/k` ≡ `↑↓` in the list, `h/l` ≡ `←→` switch tabs (Ctrl-chords work too)
-- In a wizard, `h/j/k/l` are **typed text** — move between fields with `Ctrl-j/k`,
-  `Ctrl-↑↓`, or `Tab`
-- `Enter` submit · `Esc`/`Ctrl-c` cancel · `?` help · `q` quit
-
-## Status
-
-Early. Config listing/adding, connect, copy, key gen/copy, tunnels and sshfs
-mounts work. Tunnel liveness/kill is currently Linux-only (`/proc`).
+Run `essh --help` for the rest.
 
 ## License
 
-AGPL-3.0-only.
+AGPL-3.0-only
