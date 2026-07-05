@@ -1,0 +1,21 @@
+[package]
+name = "easyssh"
+version = "0.1.0"
+edition = "2021"
+description = "make ssh easy — hosts, keys, tunnels, mounts and file copies in one CLI + TUI"
+license = "AGPL-3.0-only"
+repository = "https://gitlab.com/safteinzz/easyssh"
+
+# The crate is `easyssh`, but the command you type is the shorter `essh`
+# (ssh + one letter — muscle memory carries, no dangerous typo of real `ssh`).
+[[bin]]
+name = "essh"
+path = "src/main.rs"
+
+[dependencies]
+anyhow    = "1"                                       # error handling in the config/key engines
+clap      = { version = "4", features = ["derive"] } # CLI argument parsing
+ratatui   = "0.29"                                    # the TUI (bare `essh`)
+crossterm = "0.28"                                    # terminal backend for ratatui + key events
+colored   = "2"                                       # colored CLI output (ls, cp)
+dirs      = "5"                                        # locate ~/.ssh and the state dir portably
