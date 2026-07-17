@@ -11,6 +11,7 @@ essh                 # open the toolbox (TUI)
 essh raspi           # connect - any unknown word is an ssh destination
 essh ls              # list hosts from ~/.ssh/config
 essh cp file raspi:~ # scp, but the alias is enough (auto -r for dirs)
+essh update          # update to the latest release on crates.io
 ```
 
 ## The toolbox (bare `essh`)

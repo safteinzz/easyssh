@@ -7,6 +7,7 @@
 //!   essh <host> [args]   Connect (anything unknown is an ssh destination)
 //!   essh ls              List every host in ~/.ssh/config  (-v shows targets)
 //!   essh cp <src> <dst>  Copy files (scp, but `host:path` and auto -r)
+//!   essh update          Update easyssh to the latest release on crates.io
 //!
 //! The philosophy: the CLI holds only what's faster to type than to click.
 //! Everything you'd have to *look up* - new keys, copying keys, port forwards,
@@ -54,6 +55,10 @@ enum Cmd {
     ///   essh cp notes.md raspi:~      one or more sources, then the destination
     #[command(verbatim_doc_comment)]
     Cp(commands::cp::Args),
+    /// Update easyssh to the latest release (cargo install easyssh --force)
+    ///   -y   skip the confirmation prompt
+    #[command(verbatim_doc_comment)]
+    Update(commands::update::Args),
     /// Any other word is an ssh destination, passed straight to ssh
     #[command(external_subcommand)]
     Connect(Vec<String>),
@@ -72,6 +77,7 @@ fn main() {
         }
         Some(Cmd::Ls(args)) => commands::ls::run(args),
         Some(Cmd::Cp(args)) => commands::cp::run(args),
+        Some(Cmd::Update(args)) => commands::update::run(args),
         Some(Cmd::Connect(args)) => commands::connect::run(args),
     }
 }

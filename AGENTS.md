@@ -26,7 +26,7 @@
 - `cargo install --path .` installs the `essh` command.
 
 ## Overview
-`easyssh` is a Rust CLI + TUI that makes ssh simple: one binary `essh` in place of `ssh` + `ssh-keygen` + `ssh-copy-id` + `scp` + `sshfs` and hand-editing `~/.ssh/config`. It is a smart frontend, not a reimplementation: every action shells out to the real tools, so ssh-agent, keys, and existing config just work. Bare `essh` opens a ratatui toolbox (Hosts / Keys / Tunnels / Mounts tabs with wizards); the CLI keeps only connect, `ls`, `cp`. Crate `easyssh`, binary `essh`, repo `git@gitlab.com:safteinzz/easyssh.git`, on crates.io, AGPL-3.0-only.
+`easyssh` is a Rust CLI + TUI that makes ssh simple: one binary `essh` in place of `ssh` + `ssh-keygen` + `ssh-copy-id` + `scp` + `sshfs` and hand-editing `~/.ssh/config`. It is a smart frontend, not a reimplementation: every action shells out to the real tools, so ssh-agent, keys, and existing config just work. Bare `essh` opens a ratatui toolbox (Hosts / Keys / Tunnels / Mounts tabs with wizards); the CLI keeps connect, `ls`, `cp`, and `update` (self-update via `cargo install easyssh --force`). Crate `easyssh`, binary `essh`, repo `git@gitlab.com:safteinzz/easyssh.git`, on crates.io, AGPL-3.0-only.
 
 ## Self-repair
 If anything here contradicts the code, the code wins; fix AGENTS.md in the same session you notice the drift.
