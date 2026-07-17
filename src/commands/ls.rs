@@ -1,4 +1,4 @@
-//! `essh ls` — every host in your config, one per line. This is your old
+//! `essh ls` - every host in your config, one per line. This is your old
 //! `grep '^Host ' ~/.ssh/config | grep -v '*' | awk '{print $2}'` alias, built
 //! in, so you never have to remember the names again.
 
@@ -27,7 +27,7 @@ pub fn run(args: Args) {
         // Pad the alias column so the targets line up.
         let width = hosts.iter().map(|h| h.alias.len()).max().unwrap_or(0);
         for h in &hosts {
-            // Show the key too when the host pins one — handy for "which key is this?".
+            // Show the key too when the host pins one - handy for "which key is this?".
             let key = match &h.identity {
                 Some(i) => format!("  ({i})"),
                 None => String::new(),

@@ -1,4 +1,4 @@
-//! `essh <host> [ssh args…]` — just connect. Anything that isn't a known
+//! `essh <host> [ssh args…]` - just connect. Anything that isn't a known
 //! subcommand is treated as an ssh destination and handed straight to `ssh`,
 //! so all your config aliases, agent auth and extra flags keep working exactly
 //! as before. We `exec` (replace this process) so ssh owns the terminal cleanly.

@@ -1,13 +1,13 @@
 [package]
 name = "easyssh"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
-description = "make ssh easy — hosts, keys, tunnels, mounts and file copies in one CLI + TUI"
+description = "make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI"
 license = "AGPL-3.0-only"
 repository = "https://gitlab.com/safteinzz/easyssh"
 
 # The crate is `easyssh`, but the command you type is the shorter `essh`
-# (ssh + one letter — muscle memory carries, no dangerous typo of real `ssh`).
+# (ssh + one letter - muscle memory carries, no dangerous typo of real `ssh`).
 [[bin]]
 name = "essh"
 path = "src/main.rs"

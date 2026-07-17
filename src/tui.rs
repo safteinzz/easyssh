@@ -1,4 +1,4 @@
-//! The toolbox — bare `essh`. Three tabs (Hosts / Keys / Tunnels) and a set of
+//! The toolbox - bare `essh`. Three tabs (Hosts / Keys / Tunnels) and a set of
 //! wizards that stand in for the commands nobody remembers: `ssh-keygen`,
 //! `ssh-copy-id`, `ssh -L/-R`, `sshfs`, and hand-editing `~/.ssh/config`.
 //!
@@ -8,6 +8,7 @@
 //! the UI. Tunnels are spawned detached and tracked, so they don't need that.
 
 use crate::keys::{self};
+use crate::mounts;
 use crate::sshcfg::{self, Host, NewHost};
 use crate::tunnels;
 use anyhow::Result;
@@ -31,19 +32,21 @@ use std::process::{Command, ExitStatus};
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
-/// The three tabs. Order here is the left-to-right / Tab-cycle order.
+/// The tabs. Order here is the left-to-right / Tab-cycle order.
 #[derive(Clone, Copy, PartialEq)]
 enum View {
     Hosts,
     Keys,
     Tunnels,
+    Mounts,
 }
 
-const VIEWS: [View; 3] = [View::Hosts, View::Keys, View::Tunnels];
+const VIEWS: [View; 4] = [View::Hosts, View::Keys, View::Tunnels, View::Mounts];
 
-const HOSTS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · ↵ connect · n new · m mount · t forward · T expose · ? help · q quit";
+const HOSTS_HINTS: &str = "↵ connect · n new · e edit · d delete · m mount · t/T tunnel · R fix-key · h/l view · ? help · q quit";
 const KEYS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · n new key · c copy to host · ? help · q quit";
 const TUNNELS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d kill · r refresh · ? help · q quit";
+const MOUNTS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d unmount · r refresh · ? help · q quit";
 
 /// One editable line in a wizard. `default` is shown in brackets and used when
 /// the field is left blank on submit (the semantics differ per action).
@@ -57,6 +60,10 @@ impl Field {
     fn new(label: &str, default: &str) -> Self {
         Self { label: label.into(), default: default.into(), value: String::new() }
     }
+    /// A field that starts pre-filled with `value` - for the edit wizard.
+    fn filled(label: &str, value: &str) -> Self {
+        Self { label: label.into(), default: String::new(), value: value.into() }
+    }
 }
 
 /// What a wizard does once submitted. Cloned out before we move the prompt, so
@@ -64,6 +71,7 @@ impl Field {
 #[derive(Clone)]
 enum Action {
     AddHost,
+    EditHost { original: String },
     NewKey,
     CopyKey { key: PathBuf },
     Mount { host: String },
@@ -95,6 +103,22 @@ impl Prompt {
                 Field::new("User", ""),
                 Field::new("Port", "22"),
                 Field::new("IdentityFile (key path, optional)", ""),
+            ],
+        }
+    }
+
+    /// The add-host wizard, pre-filled with a host's current settings.
+    fn edit_host(h: &Host) -> Self {
+        Self {
+            title: format!("Edit host '{}'", h.alias),
+            idx: 0,
+            action: Action::EditHost { original: h.alias.clone() },
+            fields: vec![
+                Field::filled("Alias (what you type after ssh)", &h.alias),
+                Field::filled("HostName (IP or DNS name)", h.hostname.as_deref().unwrap_or("")),
+                Field::filled("User", h.user.as_deref().unwrap_or("")),
+                Field::filled("Port", h.port.as_deref().unwrap_or("")),
+                Field::filled("IdentityFile (key path, optional)", h.identity.as_deref().unwrap_or("")),
             ],
         }
     }
@@ -159,10 +183,20 @@ impl Prompt {
 }
 
 /// An external command the event loop must run *suspended* (outside the TUI) so
-/// it can own the terminal — connect, keygen, copy-id, mount.
+/// it can own the terminal - connect, keygen, copy-id, mount.
 struct PendingRun {
     argv: Vec<String>,
     label: String,
+}
+
+/// A yes/no gate shown before a destructive, persistent action (deleting a host).
+struct Confirm {
+    message: String,
+    action: ConfirmAction,
+}
+
+enum ConfirmAction {
+    DeleteHost(String),
 }
 
 struct App {
@@ -170,30 +204,42 @@ struct App {
     hosts: Vec<Host>,
     keys: Vec<keys::Key>,
     tunnels: Vec<tunnels::Tunnel>,
+    mounts: Vec<mounts::Mount>,
     host_state: ListState,
     key_state: ListState,
     tunnel_state: ListState,
+    mount_state: ListState,
     prompt: Option<Prompt>,
+    confirm: Option<Confirm>,
     status: String,
     show_help: bool,
     should_quit: bool,
 }
 
 impl App {
-    fn new() -> Self {
-        let mut app = App {
+    /// An app with no data loaded - the base for both `new()` and the tests
+    /// (which set the lists directly, so they never touch the real ~/.ssh).
+    fn empty() -> Self {
+        App {
             view: View::Hosts,
             hosts: Vec::new(),
             keys: Vec::new(),
             tunnels: Vec::new(),
+            mounts: Vec::new(),
             host_state: ListState::default(),
             key_state: ListState::default(),
             tunnel_state: ListState::default(),
+            mount_state: ListState::default(),
             prompt: None,
+            confirm: None,
             status: String::new(),
             show_help: false,
             should_quit: false,
-        };
+        }
+    }
+
+    fn new() -> Self {
+        let mut app = Self::empty();
         app.refresh_all();
         app
     }
@@ -204,6 +250,7 @@ impl App {
         self.refresh_hosts();
         self.refresh_keys();
         self.refresh_tunnels();
+        self.refresh_mounts();
     }
 
     fn refresh_hosts(&mut self) {
@@ -219,6 +266,11 @@ impl App {
     fn refresh_tunnels(&mut self) {
         self.tunnels = tunnels::list();
         Self::clamp(&mut self.tunnel_state, self.tunnels.len());
+    }
+
+    fn refresh_mounts(&mut self) {
+        self.mounts = mounts::list();
+        Self::clamp(&mut self.mount_state, self.mounts.len());
     }
 
     /// Keep a list's selection in range (and set/clear it as the list fills/empties).
@@ -243,6 +295,10 @@ impl App {
         self.tunnel_state.selected().and_then(|i| self.tunnels.get(i))
     }
 
+    fn selected_mount(&self) -> Option<&mounts::Mount> {
+        self.mount_state.selected().and_then(|i| self.mounts.get(i))
+    }
+
     // --- input ------------------------------------------------------------
 
     fn on_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
@@ -252,10 +308,34 @@ impl App {
             }
             return None;
         }
+        if self.confirm.is_some() {
+            return self.confirm_key(key);
+        }
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
         self.nav_key(key)
+    }
+
+    /// Resolve a pending yes/no gate. Only `y`/`Enter` proceeds; anything else
+    /// (including `n`/`Esc`) cancels.
+    fn confirm_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
+        let proceed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter);
+        let c = self.confirm.take()?;
+        if !proceed {
+            self.status = "cancelled".into();
+            return None;
+        }
+        match c.action {
+            ConfirmAction::DeleteHost(alias) => match sshcfg::delete_host(&alias) {
+                Ok(_) => {
+                    self.refresh_hosts();
+                    self.status = format!("deleted '{alias}' (config backed up)");
+                }
+                Err(e) => self.status = format!("delete failed: {e}"),
+            },
+        }
+        None
     }
 
     fn nav_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
@@ -267,7 +347,7 @@ impl App {
             return None;
         }
 
-        // Movement — arrows and vim keys are interchangeable, and the Ctrl-chord
+        // Movement - arrows and vim keys are interchangeable, and the Ctrl-chord
         // variants navigate too (so the same fingers work everywhere). Views are
         // the horizontal axis (←→ / h l / Tab); the list is the vertical (↑↓ / k j).
         match key.code {
@@ -307,6 +387,7 @@ impl App {
             View::Hosts => self.hosts_key(key),
             View::Keys => self.keys_key(key),
             View::Tunnels => self.tunnels_key(key),
+            View::Mounts => self.mounts_key(key),
         }
     }
 
@@ -322,6 +403,33 @@ impl App {
             // `n` = new/create, the same key in every view (the lazygit convention).
             KeyCode::Char('n') => {
                 self.prompt = Some(Prompt::add_host());
+                None
+            }
+            KeyCode::Char('e') => {
+                let host = self.selected_host()?.clone();
+                self.prompt = Some(Prompt::edit_host(&host));
+                None
+            }
+            KeyCode::Char('d') => {
+                let alias = self.selected_host()?.alias.clone();
+                self.confirm = Some(Confirm {
+                    message: format!("Delete host '{alias}' from ~/.ssh/config?"),
+                    action: ConfirmAction::DeleteHost(alias),
+                });
+                None
+            }
+            // Clear a host's stale key from known_hosts (the "REMOTE HOST
+            // IDENTIFICATION HAS CHANGED" fix). Non-interactive, so run it inline.
+            KeyCode::Char('R') => {
+                let target = {
+                    let h = self.selected_host()?;
+                    h.hostname.clone().unwrap_or_else(|| h.alias.clone())
+                };
+                self.status = match Command::new("ssh-keygen").arg("-R").arg(&target).output() {
+                    Ok(o) if o.status.success() => format!("cleared known_hosts for {target}"),
+                    Ok(o) => format!("ssh-keygen -R failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+                    Err(e) => format!("could not run ssh-keygen: {e}"),
+                };
                 None
             }
             KeyCode::Char('m') => {
@@ -376,6 +484,28 @@ impl App {
         }
     }
 
+    fn mounts_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
+        match key.code {
+            KeyCode::Char('d') | KeyCode::Char('x') => {
+                let local = self.selected_mount()?.local.clone();
+                match mounts::unmount(&local) {
+                    Ok(_) => {
+                        self.refresh_mounts();
+                        self.status = format!("unmounted {local}");
+                    }
+                    Err(e) => self.status = format!("unmount failed: {e}"),
+                }
+                None
+            }
+            KeyCode::Char('r') => {
+                self.refresh_mounts();
+                self.status = "refreshed mounts".into();
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn prompt_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let len = self.prompt.as_ref().map(|p| p.fields.len()).unwrap_or(0);
@@ -385,7 +515,7 @@ impl App {
 
         // Field navigation. Plain h/j/k/l are *typed* here (you're filling a text
         // field), so a vim user moves between fields with the Ctrl-chords or the
-        // arrows/Tab — exactly the "submenu" rule. Ctrl-Down/Up also carry ctrl,
+        // arrows/Tab - exactly the "submenu" rule. Ctrl-Down/Up also carry ctrl,
         // but their arm matches on the code so they land as next/prev too.
         let next = matches!(key.code, KeyCode::Tab | KeyCode::Down)
             || (ctrl && matches!(key.code, KeyCode::Char('j') | KeyCode::Char('l') | KeyCode::Right));
@@ -424,7 +554,7 @@ impl App {
             KeyCode::Backspace => {
                 self.prompt.as_mut().unwrap().cur_mut().value.pop();
             }
-            // Everything else with no Ctrl held is literal text — including h/j/k/l.
+            // Everything else with no Ctrl held is literal text - including h/j/k/l.
             KeyCode::Char(c) if !ctrl => {
                 self.prompt.as_mut().unwrap().cur_mut().value.push(c);
             }
@@ -466,6 +596,30 @@ impl App {
                 None
             }
 
+            Action::EditHost { original } => {
+                if v[0].is_empty() {
+                    self.status = "edit host: an alias is required".into();
+                    self.prompt = Some(prompt);
+                    return None;
+                }
+                let port = if v[3].is_empty() { "22".into() } else { v[3].clone() };
+                let nh = NewHost {
+                    alias: v[0].clone(),
+                    hostname: v[1].clone(),
+                    user: v[2].clone(),
+                    port,
+                    identity: v[4].clone(),
+                };
+                match sshcfg::update_host(&original, &nh) {
+                    Ok(_) => {
+                        self.refresh_hosts();
+                        self.status = format!("updated host '{}' (config backed up)", v[0]);
+                    }
+                    Err(e) => self.status = format!("edit failed: {e}"),
+                }
+                None
+            }
+
             Action::NewKey => {
                 let name = if v[0].is_empty() { "id_ed25519".into() } else { v[0].clone() };
                 let path = sshcfg::ssh_dir().join(name).to_string_lossy().into_owned();
@@ -503,6 +657,8 @@ impl App {
                     self.status = format!("mount: cannot create {local}: {e}");
                     return None;
                 }
+                // Jump to the Mounts tab so the result (success or empty) is visible.
+                self.view = View::Mounts;
                 Some(PendingRun {
                     argv: vec!["sshfs".into(), format!("{host}:{remote}"), local.clone()],
                     label: format!("mount {host} → {local}"),
@@ -562,6 +718,7 @@ impl App {
             View::Hosts => Self::move_state(&mut self.host_state, self.hosts.len(), delta),
             View::Keys => Self::move_state(&mut self.key_state, self.keys.len(), delta),
             View::Tunnels => Self::move_state(&mut self.tunnel_state, self.tunnels.len(), delta),
+            View::Mounts => Self::move_state(&mut self.mount_state, self.mounts.len(), delta),
         }
     }
 
@@ -596,11 +753,35 @@ fn ui(f: &mut Frame, app: &mut App) {
     if let Some(p) = &app.prompt {
         render_prompt(f, area, p);
     }
+    if let Some(c) = &app.confirm {
+        render_confirm(f, area, c);
+    }
+}
+
+fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
+    let rect = centered(area, 60, 6);
+    f.render_widget(Clear, rect);
+    let lines = vec![
+        Line::raw(""),
+        Line::from(Span::raw(format!("  {}", c.message))),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  y confirm      n / Esc cancel",
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+    ];
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" confirm ")
+            .border_style(Style::default().fg(Color::Red)),
+    );
+    f.render_widget(para, rect);
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
     let idx = VIEWS.iter().position(|v| *v == app.view).unwrap_or(0);
-    let tabs = Tabs::new(vec!["Hosts", "Keys", "Tunnels"])
+    let tabs = Tabs::new(vec!["Hosts", "Keys", "Tunnels", "Mounts (sshfs)"])
         .select(idx)
         .block(Block::default().borders(Borders::ALL).title(" easyssh · essh "))
         .divider("│")
@@ -687,6 +868,23 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                 .highlight_symbol("▸ ");
             f.render_stateful_widget(list, area, &mut app.tunnel_state);
         }
+
+        View::Mounts => {
+            if app.mounts.is_empty() {
+                empty(f, area, "Mounts", "No sshfs mounts.\nMount one from the Hosts tab with `m`.");
+                return;
+            }
+            let items: Vec<ListItem> = app
+                .mounts
+                .iter()
+                .map(|m| ListItem::new(Span::raw(m.describe())))
+                .collect();
+            let list = List::new(items)
+                .block(titled("Mounts", app.mounts.len()))
+                .highlight_style(sel)
+                .highlight_symbol("▸ ");
+            f.render_stateful_widget(list, area, &mut app.mount_state);
+        }
     }
 }
 
@@ -697,6 +895,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             View::Hosts => HOSTS_HINTS,
             View::Keys => KEYS_HINTS,
             View::Tunnels => TUNNELS_HINTS,
+            View::Mounts => MOUNTS_HINTS,
         }
     } else {
         &app.status
@@ -752,21 +951,22 @@ fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
-    let rect = centered(area, 74, 18);
+    let rect = centered(area, 76, 21);
     f.render_widget(Clear, rect);
     let dim = Style::default().add_modifier(Modifier::DIM);
     let lines = vec![
-        Line::from(Span::styled("easyssh — one tool for ssh, keys, tunnels, mounts", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("easyssh - one tool for ssh, keys, tunnels, mounts", Style::default().add_modifier(Modifier::BOLD))),
         Line::raw(""),
         Line::raw("Move      j/k or ↑↓ list     h/l or ←→ switch view     (Ctrl+ works too)"),
         Line::raw("Global    ? help      q or Ctrl-c quit"),
         Line::raw(""),
-        Line::raw("Hosts     ↵ connect      n new host      m mount (sshfs)"),
+        Line::raw("Hosts     ↵ connect   n new   e edit   d delete   m mount (sshfs)"),
         Line::raw("          t forward a remote port to you   T expose a local port"),
+        Line::raw("          R clear this host from known_hosts (stale-key fix)"),
         Line::raw(""),
         Line::raw("Keys      n new ed25519 key      c copy key to a host"),
-        Line::raw(""),
         Line::raw("Tunnels   d kill      r refresh"),
+        Line::raw("Mounts    d unmount   r refresh"),
         Line::raw(""),
         Line::raw("In a form  type to fill (h/j/k/l are text!)"),
         Line::raw("           Ctrl-j/k · Ctrl-↑↓ · Tab move between fields   Esc cancel"),
@@ -902,12 +1102,12 @@ mod tests {
 
     #[test]
     fn renders_chrome_and_wizards() {
-        let mut app = App::new();
+        let mut app = App::empty();
 
         // Tab chrome is always present.
         let hosts = render(&mut app);
         assert!(hosts.contains("easyssh"), "title bar missing");
-        assert!(hosts.contains("Hosts") && hosts.contains("Tunnels"), "tabs missing");
+        assert!(hosts.contains("Hosts") && hosts.contains("Mounts"), "tabs missing");
 
         // The add-host wizard overlays its fields.
         app.prompt = Some(Prompt::add_host());
@@ -930,7 +1130,7 @@ mod tests {
 
     #[test]
     fn tab_cycles_views() {
-        let mut app = App::new();
+        let mut app = App::empty();
         assert!(matches!(app.view, View::Hosts));
         app.cycle_view(1);
         assert!(matches!(app.view, View::Keys));
@@ -947,7 +1147,7 @@ mod tests {
 
     #[test]
     fn vim_keys_switch_views() {
-        let mut app = App::new();
+        let mut app = App::empty();
         app.on_key(press(KeyCode::Char('l'))); // → next view
         assert!(matches!(app.view, View::Keys));
         app.on_key(press(KeyCode::Char('h'))); // ← prev view
@@ -956,7 +1156,7 @@ mod tests {
 
     #[test]
     fn n_creates_in_every_view() {
-        let mut app = App::new();
+        let mut app = App::empty();
         // Hosts: `n` opens the add-host wizard.
         app.on_key(press(KeyCode::Char('n')));
         assert!(matches!(app.prompt.as_ref().map(|p| &p.action), Some(Action::AddHost)));
@@ -970,7 +1170,7 @@ mod tests {
 
     #[test]
     fn form_typing_vs_field_nav() {
-        let mut app = App::new();
+        let mut app = App::empty();
         app.prompt = Some(Prompt::add_host()); // 5 fields, idx 0
 
         // Plain h/j/k/l are literal text in a form.
@@ -991,5 +1191,47 @@ mod tests {
         // Ctrl-c bails out of the wizard.
         app.on_key(ctrl(KeyCode::Char('c')));
         assert!(app.prompt.is_none());
+    }
+
+    /// An app with one selected host, built without touching disk.
+    fn app_with_host() -> App {
+        let mut app = App::empty();
+        app.hosts = vec![Host {
+            alias: "raspi".into(),
+            hostname: Some("10.0.0.1".into()),
+            user: Some("pi".into()),
+            port: None,
+            identity: None,
+        }];
+        app.host_state.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn e_opens_edit_prefilled() {
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('e')));
+        let p = app.prompt.as_ref().expect("edit wizard should open");
+        assert!(matches!(p.action, Action::EditHost { .. }));
+        assert_eq!(p.fields[0].value, "raspi", "alias pre-filled");
+        assert_eq!(p.fields[1].value, "10.0.0.1", "hostname pre-filled");
+    }
+
+    #[test]
+    fn d_gates_delete_behind_confirm() {
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('d')));
+        assert!(app.confirm.is_some(), "delete must ask first");
+        app.on_key(press(KeyCode::Char('n'))); // decline
+        assert!(app.confirm.is_none(), "declining clears the gate");
+        // The host is still there (we never confirmed).
+        assert_eq!(app.hosts.len(), 1);
+    }
+
+    #[test]
+    fn mounts_tab_renders() {
+        let mut app = App::empty();
+        app.view = View::Mounts;
+        assert!(render(&mut app).contains("Mounts"));
     }
 }

@@ -1,4 +1,4 @@
-//! easyssh — an ssh toolbox that makes ssh simple. Binary: `essh`.
+//! easyssh - an ssh toolbox that makes ssh simple. Binary: `essh`.
 //!
 //! One tool that swallows `ssh`, `scp`, `ssh-keygen`, `ssh-copy-id` and `sshfs`
 //! so you never dig through man pages or your own notes again.
@@ -9,28 +9,34 @@
 //!   essh cp <src> <dst>  Copy files (scp, but `host:path` and auto -r)
 //!
 //! The philosophy: the CLI holds only what's faster to type than to click.
-//! Everything you'd have to *look up* — new keys, copying keys, port forwards,
-//! mounts, adding a host — lives in the TUI, where there's nothing to remember.
+//! Everything you'd have to *look up* - new keys, copying keys, port forwards,
+//! mounts, adding a host - lives in the TUI, where there's nothing to remember.
 
 mod commands;
 mod keys;
+mod mounts;
 mod sshcfg;
 mod tui;
 mod tunnels;
 
 use clap::{Parser, Subcommand};
 
-/// Shown under `essh --help`: the one thing the command list can't convey — that
-/// the real power is the TUI, and any bare word is just an ssh connect.
-const AFTER: &str = "Run `essh` with no arguments to open the toolbox (keys, tunnels, mounts, add host).
-Any other word is an ssh destination: `essh raspi`, `essh raspi -p 2222`.";
+/// Shown under `essh --help`. The command list can't convey the two things that
+/// aren't subcommands: bare `essh` opens the TUI, and any bare word connects.
+const AFTER: &str = "\
+Two more ways to run it (not subcommands):
+  essh                 open the toolbox (TUI): hosts, keys, tunnels, mounts
+  essh <host> [args]   connect (any unknown word is an ssh destination, e.g. `essh raspi -p 2222`)
+
+The toolbox is where keys, tunnels, mounts, and adding/editing hosts live.
+Run `essh <command> --help` for a command's details.";
 
 #[derive(Parser)]
 #[command(
     name = "easyssh",
     bin_name = "essh",
     version,
-    about = "make ssh easy — hosts, keys, tunnels, mounts and copies in one tool",
+    about = "make ssh easy - hosts, keys, tunnels, mounts and copies in one tool",
     after_help = AFTER
 )]
 struct Cli {
@@ -44,7 +50,9 @@ enum Cmd {
     ///   -v   also show where each alias connects
     #[command(verbatim_doc_comment)]
     Ls(commands::ls::Args),
-    /// Copy files over scp with alias:path shorthand and auto -r
+    /// Copy files over scp: alias:path shorthand, auto -r for directories
+    ///   essh cp notes.md raspi:~      one or more sources, then the destination
+    #[command(verbatim_doc_comment)]
     Cp(commands::cp::Args),
     /// Any other word is an ssh destination, passed straight to ssh
     #[command(external_subcommand)]

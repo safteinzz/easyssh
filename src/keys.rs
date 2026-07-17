@@ -1,5 +1,5 @@
 //! Discover the SSH keypairs sitting in `~/.ssh` so the TUI can list them,
-//! generate new ones, and copy them to hosts — the "organizing keys? WHEN is a
+//! generate new ones, and copy them to hosts - the "organizing keys? WHEN is a
 //! mess" problem. We treat any `*.pub` with a matching private file as a key.
 
 use std::fs;
@@ -29,7 +29,7 @@ impl Key {
 }
 
 /// Every keypair in `~/.ssh`, sorted by filename. A `.pub` without its private
-/// counterpart is skipped — you can't `ssh -i` half a pair.
+/// counterpart is skipped - you can't `ssh -i` half a pair.
 pub fn list() -> Vec<Key> {
     let dir = crate::sshcfg::ssh_dir();
     let mut keys = Vec::new();
