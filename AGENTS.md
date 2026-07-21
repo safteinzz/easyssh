@@ -17,6 +17,7 @@
 - When adding a TUI action: `n` = new/create in every view (lazygit convention), and verbs stay consistent across views (`d` delete/kill/unmount, `r` refresh, `c` copy, `e` edit). Destructive persistent actions (delete host) get a yes/no confirm gate; trivially redone ones (kill, unmount) act at once.
 - TUI keys: `j/k` and arrows move, `h/l`/arrows/Tab switch view, Ctrl-chords also navigate. Inside a wizard `h/j/k/l` are typed text, so fields move with `Ctrl-j/k`, `Ctrl-arrows`, or `Tab`.
 - Interactive children (connect, keygen, copy-id, mount) run suspended: leave the alt-screen, run so they can prompt for passwords, then restore. Tunnels are detached and skip this.
+- When suspending the TUI: call `show_cursor()` after leaving the alt-screen. ratatui hides the cursor while drawing and leaving the alt-screen does not restore it, so the child otherwise runs with an invisible cursor and you cannot see what you type.
 - When testing the TUI: driving it through `script`/pty is unreliable (the alt-screen isn't captured); assert rendering with ratatui `TestBackend`, not a pty.
 
 ## Build / test

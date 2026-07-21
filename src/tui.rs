@@ -1052,11 +1052,16 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
 fn run_suspended(terminal: &mut Term, argv: &[String]) -> Result<Option<ExitStatus>> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    // ratatui hides the cursor while drawing and leaving the alt-screen does not
+    // restore it, so without this the child (ssh, keygen, copy-id, sshfs) runs
+    // with an invisible cursor and you cannot see where you are typing.
+    terminal.show_cursor()?;
 
     let status = Command::new(&argv[0]).args(&argv[1..]).status().ok();
 
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    terminal.hide_cursor()?;
     terminal.clear()?;
     Ok(status)
 }
