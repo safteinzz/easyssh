@@ -29,6 +29,7 @@ use std::fs;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
+use std::time::{Duration, Instant};
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -43,10 +44,15 @@ enum View {
 
 const VIEWS: [View; 4] = [View::Hosts, View::Keys, View::Tunnels, View::Mounts];
 
-const HOSTS_HINTS: &str = "↵ connect · n new · e edit · d delete · m mount · t/T tunnel · R fix-key · h/l view · ? help · q quit";
-const KEYS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · n new key · c copy to host · ? help · q quit";
+// Labels read "meaning (real command)": the plain verb so a newcomer can scan by
+// intent, the command in parens so they learn the tool they'd need without us.
+const HOSTS_HINTS: &str = "↵ connect · c new · e edit · d delete · m mount (sshfs) · t/T tunnel (ssh -L/-R) · R fix key (ssh-keygen -R) · ? help · q quit";
+const KEYS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · c new key (ssh-keygen) · y yank to host (ssh-copy-id) · ? help · q quit";
 const TUNNELS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d kill · r refresh · ? help · q quit";
-const MOUNTS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d unmount · r refresh · ? help · q quit";
+const MOUNTS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d unmount (fusermount -u) · r refresh · ? help · q quit";
+
+/// How long a status message stays on screen before the hints return.
+const STATUS_TTL: Duration = Duration::from_millis(1500);
 
 /// One editable line in a wizard. `default` is shown in brackets and used when
 /// the field is left blank on submit (the semantics differ per action).
@@ -72,8 +78,7 @@ impl Field {
 enum Action {
     AddHost,
     EditHost { original: String },
-    NewKey,
-    CopyKey { key: PathBuf },
+    NewKey { kind: String },
     Mount { host: String },
     Forward { host: String },
     Reverse { host: String },
@@ -110,7 +115,7 @@ impl Prompt {
     /// The add-host wizard, pre-filled with a host's current settings.
     fn edit_host(h: &Host) -> Self {
         Self {
-            title: format!("Edit host '{}'", h.alias),
+            title: format!("Edit host '{}' in ~/.ssh/config", h.alias),
             idx: 0,
             action: Action::EditHost { original: h.alias.clone() },
             fields: vec![
@@ -123,31 +128,21 @@ impl Prompt {
         }
     }
 
-    fn new_key() -> Self {
+    fn new_key(kind: &str) -> Self {
         Self {
-            title: "Generate a new ed25519 key".into(),
+            title: format!("Generate a new key (ssh-keygen -t {kind})"),
             idx: 0,
-            action: Action::NewKey,
+            action: Action::NewKey { kind: kind.to_string() },
             fields: vec![
-                Field::new("Key name (file in ~/.ssh)", "id_ed25519"),
+                Field::new("Key name (file in ~/.ssh)", &format!("id_{kind}")),
                 Field::new("Comment (your email)", ""),
             ],
         }
     }
 
-    fn copy_key(key: PathBuf) -> Self {
-        let name = key.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Self {
-            title: format!("Copy '{name}' to a host (ssh-copy-id)"),
-            idx: 0,
-            action: Action::CopyKey { key },
-            fields: vec![Field::new("Host (a config alias)", "")],
-        }
-    }
-
     fn mount(host: String) -> Self {
         Self {
-            title: format!("Mount {host} locally (sshfs)"),
+            title: format!("Mount {host} on a local folder (sshfs)"),
             idx: 0,
             action: Action::Mount { host: host.clone() },
             fields: vec![
@@ -159,7 +154,7 @@ impl Prompt {
 
     fn forward(host: String) -> Self {
         Self {
-            title: format!("Reach a service on {host} from your machine (-L)"),
+            title: format!("Reach a service on {host} from this machine (ssh -L)"),
             idx: 0,
             action: Action::Forward { host: host.clone() },
             fields: vec![
@@ -171,7 +166,7 @@ impl Prompt {
 
     fn reverse(host: String) -> Self {
         Self {
-            title: format!("Expose a local port on {host} (-R)"),
+            title: format!("Expose a local port on {host} (ssh -R)"),
             idx: 0,
             action: Action::Reverse { host: host.clone() },
             fields: vec![
@@ -187,6 +182,20 @@ impl Prompt {
 struct PendingRun {
     argv: Vec<String>,
     label: String,
+}
+
+/// A modal list picker: choose an existing value instead of typing it. Anything
+/// the app already knows (config hosts, keys) must be picked, never re-typed.
+struct Picker {
+    title: String,
+    items: Vec<String>,
+    idx: usize,
+    action: PickerAction,
+}
+
+enum PickerAction {
+    CopyKeyTo { key: PathBuf },
+    NewKeyType,
 }
 
 /// A yes/no gate shown before a destructive, persistent action (deleting a host).
@@ -210,8 +219,12 @@ struct App {
     tunnel_state: ListState,
     mount_state: ListState,
     prompt: Option<Prompt>,
+    picker: Option<Picker>,
     confirm: Option<Confirm>,
     status: String,
+    /// When `status` was set; it stops showing after `STATUS_TTL` so an old
+    /// message never sits there looking like it is still current.
+    status_at: Option<Instant>,
     show_help: bool,
     should_quit: bool,
 }
@@ -231,11 +244,25 @@ impl App {
             tunnel_state: ListState::default(),
             mount_state: ListState::default(),
             prompt: None,
+            picker: None,
             confirm: None,
             status: String::new(),
+            status_at: None,
             show_help: false,
             should_quit: false,
         }
+    }
+
+    /// Set the transient status line. It fades on its own after `STATUS_TTL`.
+    fn set_status(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        self.status_at = Some(Instant::now());
+    }
+
+    /// The status message while it is still fresh; `None` once it has expired.
+    fn live_status(&self) -> Option<&str> {
+        let at = self.status_at?;
+        (at.elapsed() < STATUS_TTL && !self.status.is_empty()).then_some(self.status.as_str())
     }
 
     fn new() -> Self {
@@ -311,10 +338,66 @@ impl App {
         if self.confirm.is_some() {
             return self.confirm_key(key);
         }
+        if self.picker.is_some() {
+            return self.picker_key(key);
+        }
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
         self.nav_key(key)
+    }
+
+    /// Drive a modal list picker: the list keys move, Enter chooses, Esc bails.
+    fn picker_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let len = self.picker.as_ref().map(|p| p.items.len()).unwrap_or(0);
+        if len == 0 {
+            self.picker = None;
+            return None;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.picker = None;
+                self.set_status("cancelled");
+            }
+            KeyCode::Char('c') if ctrl => {
+                self.picker = None;
+                self.set_status("cancelled");
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let p = self.picker.as_mut().unwrap();
+                p.idx = (p.idx + 1) % len;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let p = self.picker.as_mut().unwrap();
+                p.idx = (p.idx + len - 1) % len;
+            }
+            KeyCode::Enter => return self.submit_picker(),
+            _ => {}
+        }
+        None
+    }
+
+    fn submit_picker(&mut self) -> Option<PendingRun> {
+        let picker = self.picker.take()?;
+        let choice = picker.items.get(picker.idx)?.clone();
+        match picker.action {
+            // Choosing a type just opens the name/comment wizard for it.
+            PickerAction::NewKeyType => {
+                let kind = if picker.idx == 0 { "ed25519" } else { "rsa" };
+                self.prompt = Some(Prompt::new_key(kind));
+                None
+            }
+            PickerAction::CopyKeyTo { key } => Some(PendingRun {
+                argv: vec![
+                    "ssh-copy-id".into(),
+                    "-i".into(),
+                    key.to_string_lossy().into_owned(),
+                    choice.clone(),
+                ],
+                label: format!("ssh-copy-id -> {choice}"),
+            }),
+        }
     }
 
     /// Resolve a pending yes/no gate. Only `y`/`Enter` proceeds; anything else
@@ -323,16 +406,16 @@ impl App {
         let proceed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter);
         let c = self.confirm.take()?;
         if !proceed {
-            self.status = "cancelled".into();
+            self.set_status("cancelled");
             return None;
         }
         match c.action {
             ConfirmAction::DeleteHost(alias) => match sshcfg::delete_host(&alias) {
                 Ok(_) => {
                     self.refresh_hosts();
-                    self.status = format!("deleted '{alias}' (config backed up)");
+                    self.set_status(format!("deleted '{alias}' (config backed up)"));
                 }
-                Err(e) => self.status = format!("delete failed: {e}"),
+                Err(e) => self.set_status(format!("delete failed: {e}")),
             },
         }
         None
@@ -397,11 +480,11 @@ impl App {
                 let alias = self.selected_host()?.alias.clone();
                 Some(PendingRun {
                     argv: vec!["ssh".into(), alias.clone()],
-                    label: format!("session to {alias}"),
+                    label: format!("ssh {alias}"),
                 })
             }
-            // `n` = new/create, the same key in every view (the lazygit convention).
-            KeyCode::Char('n') => {
+            // `c` = create, the same key in every view (the tmux convention).
+            KeyCode::Char('c') => {
                 self.prompt = Some(Prompt::add_host());
                 None
             }
@@ -425,11 +508,12 @@ impl App {
                     let h = self.selected_host()?;
                     h.hostname.clone().unwrap_or_else(|| h.alias.clone())
                 };
-                self.status = match Command::new("ssh-keygen").arg("-R").arg(&target).output() {
-                    Ok(o) if o.status.success() => format!("cleared known_hosts for {target}"),
+                let msg = match Command::new("ssh-keygen").arg("-R").arg(&target).output() {
+                    Ok(o) if o.status.success() => format!("ssh-keygen -R {target}: cleared known_hosts"),
                     Ok(o) => format!("ssh-keygen -R failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
                     Err(e) => format!("could not run ssh-keygen: {e}"),
                 };
+                self.set_status(msg);
                 None
             }
             KeyCode::Char('m') => {
@@ -453,13 +537,35 @@ impl App {
 
     fn keys_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         match key.code {
-            KeyCode::Char('n') => {
-                self.prompt = Some(Prompt::new_key());
+            // Ask the type first: ed25519 for anything modern, rsa only for boxes
+            // too old to speak it. Picked, not typed.
+            KeyCode::Char('c') => {
+                self.picker = Some(Picker {
+                    title: "Which key type?".into(),
+                    items: vec![
+                        "ed25519  (recommended: smaller, faster, modern)".into(),
+                        "rsa 4096 (only for servers too old for ed25519)".into(),
+                    ],
+                    idx: 0,
+                    action: PickerAction::NewKeyType,
+                });
                 None
             }
-            KeyCode::Char('c') => {
+            // Pick the host from the config list; never make the user retype an
+            // alias the app already knows.
+            KeyCode::Char('y') => {
                 let path = self.selected_key()?.path.clone();
-                self.prompt = Some(Prompt::copy_key(path));
+                if self.hosts.is_empty() {
+                    self.set_status("no hosts in ~/.ssh/config to copy to");
+                    return None;
+                }
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.picker = Some(Picker {
+                    title: format!("Copy '{name}.pub' into which host's authorized_keys? (ssh-copy-id)"),
+                    items: self.hosts.iter().map(|h| h.alias.clone()).collect(),
+                    idx: 0,
+                    action: PickerAction::CopyKeyTo { key: path },
+                });
                 None
             }
             _ => None,
@@ -472,12 +578,12 @@ impl App {
                 let pid = self.selected_tunnel()?.pid;
                 let _ = tunnels::kill(pid);
                 self.refresh_tunnels();
-                self.status = format!("killed tunnel {pid}");
+                self.set_status(format!("killed tunnel {pid}"));
                 None
             }
             KeyCode::Char('r') => {
                 self.refresh_tunnels();
-                self.status = "refreshed tunnels".into();
+                self.set_status("refreshed tunnels");
                 None
             }
             _ => None,
@@ -491,15 +597,15 @@ impl App {
                 match mounts::unmount(&local) {
                     Ok(_) => {
                         self.refresh_mounts();
-                        self.status = format!("unmounted {local}");
+                        self.set_status(format!("fusermount -u {local}: unmounted"));
                     }
-                    Err(e) => self.status = format!("unmount failed: {e}"),
+                    Err(e) => self.set_status(format!("unmount failed: {e}")),
                 }
                 None
             }
             KeyCode::Char('r') => {
                 self.refresh_mounts();
-                self.status = "refreshed mounts".into();
+                self.set_status("refreshed mounts");
                 None
             }
             _ => None,
@@ -536,12 +642,12 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.prompt = None;
-                self.status = "cancelled".into();
+                self.set_status("cancelled");
             }
             // Ctrl-C bails out of the wizard rather than typing a literal 'c'.
             KeyCode::Char('c') if ctrl => {
                 self.prompt = None;
-                self.status = "cancelled".into();
+                self.set_status("cancelled");
             }
             KeyCode::Enter => {
                 let idx = self.prompt.as_ref().unwrap().idx;
@@ -574,7 +680,7 @@ impl App {
         match action {
             Action::AddHost => {
                 if v[0].is_empty() {
-                    self.status = "add host: an alias is required".into();
+                    self.set_status("add host: an alias is required");
                     self.prompt = Some(prompt);
                     return None;
                 }
@@ -589,16 +695,16 @@ impl App {
                 match sshcfg::add_host(&nh) {
                     Ok(_) => {
                         self.refresh_hosts();
-                        self.status = format!("added host '{}' (config backed up)", v[0]);
+                        self.set_status(format!("added host '{}' (config backed up)", v[0]));
                     }
-                    Err(e) => self.status = format!("add host failed: {e}"),
+                    Err(e) => self.set_status(format!("add host failed: {e}")),
                 }
                 None
             }
 
             Action::EditHost { original } => {
                 if v[0].is_empty() {
-                    self.status = "edit host: an alias is required".into();
+                    self.set_status("edit host: an alias is required");
                     self.prompt = Some(prompt);
                     return None;
                 }
@@ -613,40 +719,28 @@ impl App {
                 match sshcfg::update_host(&original, &nh) {
                     Ok(_) => {
                         self.refresh_hosts();
-                        self.status = format!("updated host '{}' (config backed up)", v[0]);
+                        self.set_status(format!("updated host '{}' (config backed up)", v[0]));
                     }
-                    Err(e) => self.status = format!("edit failed: {e}"),
+                    Err(e) => self.set_status(format!("edit failed: {e}")),
                 }
                 None
             }
 
-            Action::NewKey => {
-                let name = if v[0].is_empty() { "id_ed25519".into() } else { v[0].clone() };
+            Action::NewKey { kind } => {
+                let name = if v[0].is_empty() { format!("id_{kind}") } else { v[0].clone() };
                 let path = sshcfg::ssh_dir().join(name).to_string_lossy().into_owned();
-                let mut argv = vec!["ssh-keygen".into(), "-t".into(), "ed25519".into(), "-f".into(), path];
+                let mut argv = vec!["ssh-keygen".into(), "-t".into(), kind.clone(), "-f".into(), path];
+                // RSA has no safe default size; anything under 4096 is not worth
+                // generating today. ed25519 has one fixed size, so no -b for it.
+                if kind == "rsa" {
+                    argv.push("-b".into());
+                    argv.push("4096".into());
+                }
                 if !v[1].is_empty() {
                     argv.push("-C".into());
                     argv.push(v[1].clone());
                 }
-                Some(PendingRun { argv, label: "generate key".into() })
-            }
-
-            Action::CopyKey { key } => {
-                if v[0].is_empty() {
-                    self.status = "copy key: a host is required".into();
-                    self.prompt = Some(prompt);
-                    return None;
-                }
-                let host = v[0].clone();
-                Some(PendingRun {
-                    argv: vec![
-                        "ssh-copy-id".into(),
-                        "-i".into(),
-                        key.to_string_lossy().into_owned(),
-                        host.clone(),
-                    ],
-                    label: format!("copy key to {host}"),
-                })
+                Some(PendingRun { argv, label: format!("ssh-keygen -t {kind}") })
             }
 
             Action::Mount { host } => {
@@ -654,20 +748,20 @@ impl App {
                 let remote = v[0].clone();
                 let local = if v[1].is_empty() { format!("./{host}") } else { v[1].clone() };
                 if let Err(e) = fs::create_dir_all(&local) {
-                    self.status = format!("mount: cannot create {local}: {e}");
+                    self.set_status(format!("mount: cannot create {local}: {e}"));
                     return None;
                 }
                 // Jump to the Mounts tab so the result (success or empty) is visible.
                 self.view = View::Mounts;
                 Some(PendingRun {
                     argv: vec!["sshfs".into(), format!("{host}:{remote}"), local.clone()],
-                    label: format!("mount {host} → {local}"),
+                    label: format!("sshfs {host}: → {local}"),
                 })
             }
 
             Action::Forward { host } => {
                 if v[0].is_empty() {
-                    self.status = "forward: a remote port is required".into();
+                    self.set_status("forward: a remote port is required");
                     self.prompt = Some(prompt);
                     return None;
                 }
@@ -678,16 +772,16 @@ impl App {
                     Ok(t) => {
                         self.view = View::Tunnels;
                         self.refresh_tunnels();
-                        self.status = format!("localhost:{local} → {host}:{remote}  (pid {})", t.pid);
+                        self.set_status(format!("localhost:{local} → {host}:{remote}  (pid {})", t.pid));
                     }
-                    Err(e) => self.status = format!("forward failed: {e}"),
+                    Err(e) => self.set_status(format!("forward failed: {e}")),
                 }
                 None
             }
 
             Action::Reverse { host } => {
                 if v[0].is_empty() {
-                    self.status = "expose: a local port is required".into();
+                    self.set_status("expose: a local port is required");
                     self.prompt = Some(prompt);
                     return None;
                 }
@@ -698,9 +792,9 @@ impl App {
                     Ok(t) => {
                         self.view = View::Tunnels;
                         self.refresh_tunnels();
-                        self.status = format!("{host}:{remote} → localhost:{local}  (pid {})", t.pid);
+                        self.set_status(format!("{host}:{remote} → localhost:{local}  (pid {})", t.pid));
                     }
-                    Err(e) => self.status = format!("expose failed: {e}"),
+                    Err(e) => self.set_status(format!("expose failed: {e}")),
                 }
                 None
             }
@@ -753,9 +847,35 @@ fn ui(f: &mut Frame, app: &mut App) {
     if let Some(p) = &app.prompt {
         render_prompt(f, area, p);
     }
+    if let Some(p) = &app.picker {
+        render_picker(f, area, p);
+    }
     if let Some(c) = &app.confirm {
         render_confirm(f, area, c);
     }
+}
+
+fn render_picker(f: &mut Frame, area: Rect, p: &Picker) {
+    let height = (p.items.len() as u16 + 2).clamp(5, 14);
+    let rect = centered(area, 60, height);
+    f.render_widget(Clear, rect);
+
+    let items: Vec<ListItem> = p.items.iter().map(|it| ListItem::new(Span::raw(it.clone()))).collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", p.title))
+                .title_bottom(" ↵ select   Esc cancel ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("▸ ");
+
+    // A local state gives us scrolling for free when there are many hosts.
+    let mut state = ListState::default();
+    state.select(Some(p.idx));
+    f.render_stateful_widget(list, rect, &mut state);
 }
 
 fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
@@ -889,21 +1009,19 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App) {
-    // Show the last action's result if there is one; otherwise the key hints.
-    let text = if app.status.is_empty() {
-        match app.view {
-            View::Hosts => HOSTS_HINTS,
-            View::Keys => KEYS_HINTS,
-            View::Tunnels => TUNNELS_HINTS,
-            View::Mounts => MOUNTS_HINTS,
+    // Show the last action's result while it is fresh; otherwise the key hints,
+    // so a stale message never masquerades as the current state.
+    let (text, style) = match app.live_status() {
+        Some(msg) => (msg, Style::default().fg(Color::Green)),
+        None => {
+            let hints = match app.view {
+                View::Hosts => HOSTS_HINTS,
+                View::Keys => KEYS_HINTS,
+                View::Tunnels => TUNNELS_HINTS,
+                View::Mounts => MOUNTS_HINTS,
+            };
+            (hints, Style::default().add_modifier(Modifier::DIM))
         }
-    } else {
-        &app.status
-    };
-    let style = if app.status.is_empty() {
-        Style::default().add_modifier(Modifier::DIM)
-    } else {
-        Style::default().fg(Color::Green)
     };
     f.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {text}"), style))), area);
 }
@@ -951,7 +1069,7 @@ fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
-    let rect = centered(area, 76, 21);
+    let rect = centered(area, 76, 23);
     f.render_widget(Clear, rect);
     let dim = Style::default().add_modifier(Modifier::DIM);
     let lines = vec![
@@ -960,13 +1078,17 @@ fn render_help(f: &mut Frame, area: Rect) {
         Line::raw("Move      j/k or ↑↓ list     h/l or ←→ switch view     (Ctrl+ works too)"),
         Line::raw("Global    ? help      q or Ctrl-c quit"),
         Line::raw(""),
-        Line::raw("Hosts     ↵ connect   n new   e edit   d delete   m mount (sshfs)"),
-        Line::raw("          t forward a remote port to you   T expose a local port"),
-        Line::raw("          R clear this host from known_hosts (stale-key fix)"),
+        Line::raw("Hosts     ↵ connect (ssh <host>)      c new / e edit / d delete"),
+        Line::raw("            n/e/d all write ~/.ssh/config for you"),
+        Line::raw("          m mount a remote folder locally (sshfs host: ./dir)"),
+        Line::raw("          t reach a remote port from here (ssh -L)"),
+        Line::raw("          T expose a local port on the host (ssh -R)"),
+        Line::raw("          R fix \"host key changed\" (ssh-keygen -R <host>)"),
         Line::raw(""),
-        Line::raw("Keys      n new ed25519 key      c copy key to a host"),
-        Line::raw("Tunnels   d kill      r refresh"),
-        Line::raw("Mounts    d unmount   r refresh"),
+        Line::raw("Keys      c new key (ssh-keygen -t ed25519)"),
+        Line::raw("          y yank to a host (ssh-copy-id -i <key> <host>)"),
+        Line::raw("Tunnels   d kill it (ends the background ssh -N)    r refresh"),
+        Line::raw("Mounts    d unmount (fusermount -u <dir>)           r refresh"),
         Line::raw(""),
         Line::raw("In a form  type to fill (h/j/k/l are text!)"),
         Line::raw("           Ctrl-j/k · Ctrl-↑↓ · Tab move between fields   Esc cancel"),
@@ -1026,6 +1148,18 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
     while !app.should_quit {
         terminal.draw(|f| ui(f, app))?;
 
+        // While a status message is showing we wake up periodically so it can
+        // expire on its own; otherwise block until the user actually presses a
+        // key, so an idle TUI costs nothing.
+        let timeout = if app.live_status().is_some() {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_secs(3600)
+        };
+        if !event::poll(timeout)? {
+            continue; // nothing pressed: redraw so the stale status drops off
+        }
+
         let Event::Key(key) = event::read()? else {
             continue;
         };
@@ -1036,11 +1170,12 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
 
         if let Some(run) = app.on_key(key) {
             let status = run_suspended(terminal, &run.argv)?;
-            app.status = match status {
+            let msg = match status {
                 Some(s) if s.success() => format!("{} ✓", run.label),
                 Some(s) => format!("{} failed (exit {})", run.label, s.code().unwrap_or(-1)),
                 None => format!("{}: could not run '{}'", run.label, run.argv[0]),
             };
+            app.set_status(msg);
             app.refresh_all();
         }
     }
@@ -1160,17 +1295,40 @@ mod tests {
     }
 
     #[test]
-    fn n_creates_in_every_view() {
+    fn c_creates_in_every_view() {
         let mut app = App::empty();
-        // Hosts: `n` opens the add-host wizard.
-        app.on_key(press(KeyCode::Char('n')));
+        // Hosts: `c` opens the add-host wizard.
+        app.on_key(press(KeyCode::Char('c')));
         assert!(matches!(app.prompt.as_ref().map(|p| &p.action), Some(Action::AddHost)));
         app.prompt = None;
 
-        // Keys: the same `n` opens the new-key wizard.
+        // Keys: the same `c` starts the new-key flow, asking the type first.
         app.view = View::Keys;
-        app.on_key(press(KeyCode::Char('n')));
-        assert!(matches!(app.prompt.as_ref().map(|p| &p.action), Some(Action::NewKey)));
+        app.on_key(press(KeyCode::Char('c')));
+        assert!(matches!(app.picker.as_ref().map(|p| &p.action), Some(PickerAction::NewKeyType)));
+
+        // Picking the first entry (ed25519) opens the name/comment wizard.
+        app.on_key(press(KeyCode::Enter));
+        match app.prompt.as_ref().map(|p| &p.action) {
+            Some(Action::NewKey { kind }) => assert_eq!(kind, "ed25519"),
+            _ => panic!("expected the new-key wizard"),
+        }
+    }
+
+    #[test]
+    fn new_key_still_offers_rsa_for_old_servers() {
+        let mut app = App::empty();
+        app.view = View::Keys;
+        app.on_key(press(KeyCode::Char('c')));
+        app.on_key(press(KeyCode::Char('j'))); // down to the rsa entry
+        app.on_key(press(KeyCode::Enter));
+
+        match app.prompt.as_ref().map(|p| &p.action) {
+            Some(Action::NewKey { kind }) => assert_eq!(kind, "rsa"),
+            _ => panic!("expected the rsa wizard"),
+        }
+        // The suggested filename follows the chosen type.
+        assert_eq!(app.prompt.as_ref().unwrap().fields[0].default, "id_rsa");
     }
 
     #[test]
@@ -1231,6 +1389,55 @@ mod tests {
         assert!(app.confirm.is_none(), "declining clears the gate");
         // The host is still there (we never confirmed).
         assert_eq!(app.hosts.len(), 1);
+    }
+
+    #[test]
+    fn y_picks_a_host_instead_of_typing_one() {
+        let mut app = app_with_host();
+        app.keys = vec![keys::Key {
+            path: "/home/u/.ssh/id_ed25519".into(),
+            kind: "ED25519".into(),
+            comment: String::new(),
+            fingerprint: String::new(),
+        }];
+        app.key_state.select(Some(0));
+        app.view = View::Keys;
+
+        // `y` = yank/copy (vim); `c` is create here, not copy, since vim's `c` is "change".
+        app.on_key(press(KeyCode::Char('y')));
+        let p = app.picker.as_ref().expect("host picker should open");
+        assert_eq!(p.items, vec!["raspi".to_string()], "picker lists the config hosts");
+        assert!(app.prompt.is_none(), "must not make the user type an alias we already know");
+    }
+
+    #[test]
+    fn n_is_not_a_create_key() {
+        // Create is `c` (tmux); `n` was dropped, so it must do nothing.
+        let mut app = App::empty();
+        app.on_key(press(KeyCode::Char('n')));
+        assert!(app.prompt.is_none(), "`n` must not create anything");
+    }
+
+    #[test]
+    fn help_overlay_is_not_cut_off() {
+        let mut app = App::empty();
+        app.show_help = true;
+        let out = render(&mut app);
+        // First and last lines both present means the box is tall enough.
+        assert!(out.contains("Move"), "help header missing");
+        assert!(out.contains("ssh-copy-id"), "help should teach the real command");
+        assert!(out.contains("press ? or Esc to close"), "help overlay is taller than its box");
+    }
+
+    #[test]
+    fn status_expires_after_its_ttl() {
+        let mut app = App::empty();
+        app.set_status("connected");
+        assert_eq!(app.live_status(), Some("connected"));
+
+        // Backdate it past the TTL: a stale message must stop showing.
+        app.status_at = Instant::now().checked_sub(STATUS_TTL * 2);
+        assert!(app.live_status().is_none());
     }
 
     #[test]
