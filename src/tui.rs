@@ -147,7 +147,7 @@ impl Prompt {
             action: Action::Mount { host: host.clone() },
             fields: vec![
                 Field::new("Remote path", "~ (home)"),
-                Field::new("Local mountpoint", &format!("./{host}")),
+                Field::new("Local mountpoint", &format!("./sshfs/{host}")),
             ],
         }
     }
@@ -596,6 +596,10 @@ impl App {
                 let local = self.selected_mount()?.local.clone();
                 match mounts::unmount(&local) {
                     Ok(_) => {
+                        // Remove the now-empty mountpoint so it does not linger.
+                        // `remove_dir` only deletes an empty dir, so a mount over
+                        // a dir that had real content is left untouched.
+                        let _ = fs::remove_dir(&local);
                         self.refresh_mounts();
                         self.set_status(format!("fusermount -u {local}: unmounted"));
                     }
@@ -744,9 +748,16 @@ impl App {
             }
 
             Action::Mount { host } => {
+                // Fail early with an install hint rather than a cryptic spawn error.
+                if !mounts::sshfs_installed() {
+                    self.set_status("sshfs is not installed (apt install sshfs · pacman -S sshfs · dnf install fuse-sshfs)");
+                    return None;
+                }
                 // Blank remote path → sshfs mounts the login home directory.
                 let remote = v[0].clone();
-                let local = if v[1].is_empty() { format!("./{host}") } else { v[1].clone() };
+                // Mountpoints live under ./sshfs/<host> so an unmounted leftover
+                // dir does not clutter the home directory.
+                let local = if v[1].is_empty() { format!("./sshfs/{host}") } else { v[1].clone() };
                 if let Err(e) = fs::create_dir_all(&local) {
                     self.set_status(format!("mount: cannot create {local}: {e}"));
                     return None;
@@ -1438,6 +1449,14 @@ mod tests {
         // Backdate it past the TTL: a stale message must stop showing.
         app.status_at = Instant::now().checked_sub(STATUS_TTL * 2);
         assert!(app.live_status().is_none());
+    }
+
+    #[test]
+    fn mount_defaults_under_sshfs_dir() {
+        // Mountpoints group under ./sshfs/<host> so leftovers do not clutter home.
+        let p = Prompt::mount("raspi".into());
+        let mountpoint = p.fields.iter().find(|f| f.label.contains("mountpoint")).unwrap();
+        assert_eq!(mountpoint.default, "./sshfs/raspi");
     }
 
     #[test]

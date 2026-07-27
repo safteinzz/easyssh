@@ -7,6 +7,15 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::process::Command;
 
+/// Whether `sshfs` is on PATH. Mounting shells out to it, so we check first and
+/// give an install hint instead of a cryptic spawn failure. We do not try to
+/// install it: that needs root and per-distro package names.
+pub fn sshfs_installed() -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("sshfs").is_file()))
+        .unwrap_or(false)
+}
+
 /// One active sshfs mount.
 pub struct Mount {
     /// The sshfs source, e.g. `pi@raspi:/home/pi`.
