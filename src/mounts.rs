@@ -61,6 +61,26 @@ pub fn unmount(local: &str) -> Result<()> {
     }
 }
 
+/// Lazy unmount: detach the mount now and let the kernel free it once nothing
+/// is using it. This is the escape hatch when a normal unmount reports the mount
+/// busy because a shell or program still has it open.
+pub fn unmount_lazy(local: &str) -> Result<()> {
+    match Command::new("fusermount").args(["-u", "-z", local]).output() {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => try_umount_lazy(local).map_err(|_| anyhow_from_stderr(&o.stderr)),
+        Err(_) => try_umount_lazy(local).context("fusermount not found and umount -l failed"),
+    }
+}
+
+fn try_umount_lazy(local: &str) -> Result<()> {
+    let o = Command::new("umount").args(["-l", local]).output().context("running umount -l")?;
+    if o.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow_from_stderr(&o.stderr))
+    }
+}
+
 fn try_umount(local: &str) -> Result<()> {
     let o = Command::new("umount").arg(local).output().context("running umount")?;
     if o.status.success() {

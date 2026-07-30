@@ -46,7 +46,7 @@ const VIEWS: [View; 4] = [View::Hosts, View::Keys, View::Tunnels, View::Mounts];
 
 // Labels read "meaning (real command)": the plain verb so a newcomer can scan by
 // intent, the command in parens so they learn the tool they'd need without us.
-const HOSTS_HINTS: &str = "↵ connect · c new · e edit · d delete · m mount (sshfs) · t/T tunnel (ssh -L/-R) · R fix key (ssh-keygen -R) · ? help · q quit";
+const HOSTS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · ↵ connect · c new · e edit · d del · m mount (sshfs) · t/T tunnel (ssh -L/-R) · R fix key (ssh-keygen -R) · ? help · q quit";
 const KEYS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · c new key (ssh-keygen) · y yank to host (ssh-copy-id) · ? help · q quit";
 const TUNNELS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d kill · r refresh · ? help · q quit";
 const MOUNTS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d unmount (fusermount -u) · r refresh · ? help · q quit";
@@ -198,14 +198,20 @@ enum PickerAction {
     NewKeyType,
 }
 
-/// A yes/no gate shown before a destructive, persistent action (deleting a host).
+/// A titled yes/no modal: confirm a destructive action, or offer a fix after
+/// something went wrong (a busy unmount, a changed host key).
 struct Confirm {
+    title: String,
     message: String,
     action: ConfirmAction,
 }
 
 enum ConfirmAction {
     DeleteHost(String),
+    /// Force `fusermount -u -z` on a mountpoint a normal unmount found busy.
+    LazyUnmount { local: String },
+    /// Run `ssh-keygen -R <target>` to drop a host key that no longer matches.
+    ClearKnownHost { target: String },
 }
 
 struct App {
@@ -417,8 +423,35 @@ impl App {
                 }
                 Err(e) => self.set_status(format!("delete failed: {e}")),
             },
+            ConfirmAction::LazyUnmount { local } => match mounts::unmount_lazy(&local) {
+                Ok(_) => {
+                    let _ = fs::remove_dir(&local);
+                    self.refresh_mounts();
+                    self.set_status(format!("fusermount -u -z {local}: lazy-unmounted"));
+                }
+                Err(e) => self.set_status(format!("lazy unmount failed: {e}")),
+            },
+            ConfirmAction::ClearKnownHost { target } => {
+                let out = Command::new("ssh-keygen").arg("-R").arg(&target).output();
+                self.set_status(match out {
+                    Ok(o) if o.status.success() => format!("removed old key for {target}; press Enter to reconnect"),
+                    Ok(o) => format!("ssh-keygen -R failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+                    Err(e) => format!("could not run ssh-keygen: {e}"),
+                });
+            }
         }
         None
+    }
+
+    /// Show the "host key changed" modal offering the `ssh-keygen -R` fix.
+    fn offer_known_hosts_fix(&mut self, host: &str, target: String) {
+        self.confirm = Some(Confirm {
+            title: "WARNING: host key changed".into(),
+            message: format!(
+                "{host}'s key no longer matches ~/.ssh/known_hosts. Usually the server was reinstalled or its IP was reused; rarely it is a man-in-the-middle. Only if you trust this change, drop the saved key (ssh-keygen -R {target}) and reconnect. Remove it now?"
+            ),
+            action: ConfirmAction::ClearKnownHost { target },
+        });
     }
 
     fn nav_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
@@ -496,6 +529,7 @@ impl App {
             KeyCode::Char('d') => {
                 let alias = self.selected_host()?.alias.clone();
                 self.confirm = Some(Confirm {
+                    title: "delete host".into(),
                     message: format!("Delete host '{alias}' from ~/.ssh/config?"),
                     action: ConfirmAction::DeleteHost(alias),
                 });
@@ -603,7 +637,15 @@ impl App {
                         self.refresh_mounts();
                         self.set_status(format!("fusermount -u {local}: unmounted"));
                     }
-                    Err(e) => self.set_status(format!("unmount failed: {e}")),
+                    Err(e) => {
+                        self.confirm = Some(Confirm {
+                            title: "unmount failed".into(),
+                            message: format!(
+                                "{local}: {e}. Something is still using it (a shell cd'd in, or an open file). Force a lazy unmount (fusermount -u -z)? It detaches now and the kernel frees it once nothing uses it."
+                            ),
+                            action: ConfirmAction::LazyUnmount { local },
+                        });
+                    }
                 }
                 None
             }
@@ -890,7 +932,7 @@ fn render_picker(f: &mut Frame, area: Rect, p: &Picker) {
 }
 
 fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
-    let rect = centered(area, 60, 6);
+    let rect = centered(area, 66, 11);
     f.render_widget(Clear, rect);
     let lines = vec![
         Line::raw(""),
@@ -901,12 +943,14 @@ fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
             Style::default().add_modifier(Modifier::DIM),
         )),
     ];
-    let para = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" confirm ")
-            .border_style(Style::default().fg(Color::Red)),
-    );
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", c.title))
+                .border_style(Style::default().fg(Color::Red)),
+        )
+        .wrap(Wrap { trim: false });
     f.render_widget(para, rect);
 }
 
@@ -1181,6 +1225,19 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
 
         if let Some(run) = app.on_key(key) {
             let status = run_suspended(terminal, &run.argv)?;
+
+            // A connect that fails with 255 may be a changed host key, which ssh
+            // prints then wipes when we redraw. Probe non-interactively and, if so,
+            // offer the fix in a modal instead of a status that flashes past.
+            let is_connect = run.argv.first().map(|a| a == "ssh").unwrap_or(false);
+            let failed_255 = matches!(status, Some(ref s) if s.code() == Some(255));
+            if is_connect && failed_255 && run.argv.len() >= 2 {
+                let host = run.argv[1].clone();
+                if let Some(target) = changed_host_key(&host) {
+                    app.offer_known_hosts_fix(&host, target);
+                }
+            }
+
             let msg = match status {
                 Some(s) if s.success() => format!("{} ✓", run.label),
                 Some(s) => format!("{} failed (exit {})", run.label, s.code().unwrap_or(-1)),
@@ -1191,6 +1248,38 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Non-interactively check whether `host`'s key changed. Returns the exact target
+/// to pass to `ssh-keygen -R` (parsed from ssh's own suggestion) when the key no
+/// longer matches, or `None` for any other outcome (new host, auth failure, down).
+/// Runs only after a failed connect, so it costs nothing on the success path.
+fn changed_host_key(host: &str) -> Option<String> {
+    let out = Command::new("ssh")
+        .args([
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=6",
+            "-o", "StrictHostKeyChecking=yes",
+            host,
+            "true",
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    if !text.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+        return None;
+    }
+    // ssh prints "remove with: ssh-keygen -f '...' -R '<target>'"; use that exact
+    // target, since it is the name/IP as stored in known_hosts, not our alias.
+    Some(parse_r_target(&text).unwrap_or_else(|| host.to_string()))
+}
+
+/// Pull the value of `-R '<target>'` (or `-R <target>`) out of ssh's message.
+fn parse_r_target(text: &str) -> Option<String> {
+    let after = text.split("-R ").nth(1)?.trim_start().trim_start_matches(['\'', '"']);
+    let end = after.find(['\'', '"', ' ', '\n', '\r', '\t']).unwrap_or(after.len());
+    let target = after[..end].trim();
+    (!target.is_empty()).then(|| target.to_string())
 }
 
 /// Leave the TUI, run an interactive command with the real terminal, then
