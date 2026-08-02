@@ -179,13 +179,13 @@ fn expand_include(value: &str) -> Vec<PathBuf> {
         match expanded.file_name().and_then(|n| n.to_str()) {
             Some(name) if name.contains('*') => {
                 // Glob the parent dir against the `*` pattern (only `*` supported).
-                if let Some(parent) = expanded.parent() {
-                    if let Ok(entries) = fs::read_dir(parent) {
-                        for e in entries.flatten() {
-                            let fname = e.file_name();
-                            if glob_match(name, &fname.to_string_lossy()) {
-                                out.push(e.path());
-                            }
+                if let Some(parent) = expanded.parent()
+                    && let Ok(entries) = fs::read_dir(parent)
+                {
+                    for e in entries.flatten() {
+                        let fname = e.file_name();
+                        if glob_match(name, &fname.to_string_lossy()) {
+                            out.push(e.path());
                         }
                     }
                 }

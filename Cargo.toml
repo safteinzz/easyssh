@@ -1,7 +1,7 @@
 [package]
 name = "easyssh"
 version = "0.2.5"
-edition = "2021"
+edition = "2024"
 description = "make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI"
 license = "AGPL-3.0-only"
 repository = "https://gitlab.com/safteinzz/easyssh"

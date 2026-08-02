@@ -23,13 +23,13 @@ pub fn run(args: Args) {
     // shows up as a confusing scp "Could not resolve hostname".
     let known: Vec<String> = sshcfg::list_hosts().into_iter().map(|h| h.alias).collect();
     for token in &args.paths {
-        if let Some(alias) = remote_alias(token) {
-            if !known.contains(&alias) {
-                eprintln!(
-                    "{}",
-                    format!("essh: '{alias}' isn't in your ~/.ssh/config - passing it to scp as-is.").yellow()
-                );
-            }
+        if let Some(alias) = remote_alias(token)
+            && !known.contains(&alias)
+        {
+            eprintln!(
+                "{}",
+                format!("essh: '{alias}' isn't in your ~/.ssh/config - passing it to scp as-is.").yellow()
+            );
         }
     }
 

@@ -22,7 +22,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Tabs, Wrap},
     Frame, Terminal,
 };
 use std::fs;
@@ -173,6 +173,41 @@ impl Prompt {
                 Field::new("Local port (yours to expose)", ""),
                 Field::new(&format!("Remote port (opened on {host})"), "= local"),
             ],
+        }
+    }
+
+    /// The exact command this wizard will run, rebuilt from the current field
+    /// values so it updates live as you type. `None` for wizards that write the
+    /// config rather than run one command. Resolution mirrors `submit_prompt`.
+    fn command_preview(&self) -> Option<String> {
+        let v = |i: usize| self.fields[i].value.trim();
+        match &self.action {
+            Action::NewKey { kind } => {
+                let name = if v(0).is_empty() { format!("id_{kind}") } else { v(0).to_string() };
+                let mut cmd = format!("ssh-keygen -t {kind} -f ~/.ssh/{name}");
+                if kind == "rsa" {
+                    cmd.push_str(" -b 4096");
+                }
+                if !v(1).is_empty() {
+                    cmd.push_str(&format!(" -C {}", v(1)));
+                }
+                Some(cmd)
+            }
+            Action::Mount { host } => {
+                let local = if v(1).is_empty() { format!("./sshfs/{host}") } else { v(1).to_string() };
+                Some(format!("sshfs {host}:{} {local}", v(0)))
+            }
+            Action::Forward { host } => {
+                let remote = v(0);
+                let local = if v(1).is_empty() { remote } else { v(1) };
+                Some(format!("ssh -N -L {local}:localhost:{remote} {host}"))
+            }
+            Action::Reverse { host } => {
+                let local = v(0);
+                let remote = if v(1).is_empty() { local } else { v(1) };
+                Some(format!("ssh -N -R {remote}:localhost:{local} {host}"))
+            }
+            Action::AddHost | Action::EditHost { .. } => None,
         }
     }
 }
@@ -932,26 +967,63 @@ fn render_picker(f: &mut Frame, area: Rect, p: &Picker) {
 }
 
 fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
-    let rect = centered(area, 66, 11);
+    // Size the box to the wrapped message so short prompts stay small and long
+    // ones (a host-key warning) are not cut off. Padding gives every line, wrapped
+    // continuations included, a uniform margin instead of butting the border.
+    let width = (area.width * 66 / 100).clamp(34, 74);
+    let inner = width.saturating_sub(6) as usize; // borders (2) + horizontal padding (4)
+    let msg_rows = wrapped_line_count(&c.message, inner) as u16;
+    let height = (msg_rows + 4).min(area.height); // padding (2) + blank + hint
+
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
     f.render_widget(Clear, rect);
+
     let lines = vec![
+        Line::raw(c.message.clone()),
         Line::raw(""),
-        Line::from(Span::raw(format!("  {}", c.message))),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "  y confirm      n / Esc cancel",
-            Style::default().add_modifier(Modifier::DIM),
-        )),
+        Line::from(Span::styled("y confirm      n / Esc cancel", Style::default().add_modifier(Modifier::DIM))),
     ];
     let para = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" {} ", c.title))
-                .border_style(Style::default().fg(Color::Red)),
+                .border_style(Style::default().fg(Color::Red))
+                .padding(Padding::new(2, 2, 1, 1)),
         )
         .wrap(Wrap { trim: false });
     f.render_widget(para, rect);
+}
+
+/// Rough count of how many rows `text` needs when word-wrapped to `width`,
+/// matching how ratatui's `Wrap` breaks on spaces. Used to size modal boxes.
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let mut rows = 1usize;
+    let mut col = 0usize;
+    for word in text.split_whitespace() {
+        let w = word.chars().count();
+        let need = if col == 0 { w } else { col + 1 + w };
+        if need <= width {
+            col = need;
+        } else {
+            rows += 1;
+            col = w;
+        }
+        // A word longer than the whole line wraps across several rows.
+        while col > width {
+            rows += 1;
+            col -= width;
+        }
+    }
+    rows
 }
 
 fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
@@ -996,7 +1068,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
 
         View::Keys => {
             if app.keys.is_empty() {
-                empty(f, area, "Keys", "No keypairs in ~/.ssh.\nPress `n` to generate an ed25519 key.");
+                empty(f, area, "Keys", "No keypairs in ~/.ssh.\nPress `c` to generate one.");
                 return;
             }
             let nw = app.keys.iter().map(|k| k.name().len()).max().unwrap_or(0);
@@ -1004,7 +1076,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                 .keys
                 .iter()
                 .map(|k| {
-                    ListItem::new(Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(format!("{:nw$}", k.name()), bold),
                         Span::raw("  "),
                         Span::styled(format!("{:7}", k.kind), Style::default().fg(Color::Cyan)),
@@ -1012,7 +1084,15 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                         Span::styled(k.fingerprint.clone(), dim),
                         Span::raw("  "),
                         Span::styled(k.comment.clone(), dim),
-                    ]))
+                    ];
+                    // Where this key has been copied (ssh-copy-id history).
+                    if !k.copied_to.is_empty() {
+                        spans.push(Span::styled(
+                            format!("  → {}", k.copied_to.join(", ")),
+                            Style::default().fg(Color::Green),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
                 })
                 .collect();
             let list = List::new(items)
@@ -1082,10 +1162,6 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
-    let height = p.fields.len() as u16 + 6;
-    let rect = centered(area, 72, height);
-    f.render_widget(Clear, rect);
-
     let mut lines: Vec<Line> = vec![Line::raw("")];
     for (i, field) in p.fields.iter().enumerate() {
         let active = i == p.idx;
@@ -1106,11 +1182,25 @@ fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             Span::raw(format!("{}{}", field.value, cursor)),
         ]));
     }
+    // Live command preview: shows the exact command being built as you type, so
+    // the wizard teaches the underlying tool instead of hiding it.
+    if let Some(cmd) = p.command_preview() {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("  runs  ", Style::default().add_modifier(Modifier::DIM)),
+            Span::styled(cmd, Style::default().fg(Color::Green)),
+        ]));
+    }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  Enter next/submit   Ctrl-j/k · Ctrl-↑↓ · Tab move field   Esc cancel",
         Style::default().add_modifier(Modifier::DIM),
     )));
+
+    // Size to content (+1 slack in case the command line wraps).
+    let height = (lines.len() as u16 + 3).min(area.height);
+    let rect = centered(area, 72, height);
+    f.render_widget(Clear, rect);
 
     let para = Paragraph::new(lines)
         .block(
@@ -1236,6 +1326,16 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 if let Some(target) = changed_host_key(&host) {
                     app.offer_known_hosts_fix(&host, target);
                 }
+            }
+
+            let ok = matches!(status, Some(ref s) if s.success());
+            // Log a successful ssh-copy-id so the Keys tab shows where a key went.
+            if ok && run.argv.first().map(|a| a == "ssh-copy-id").unwrap_or(false) && run.argv.len() >= 4 {
+                let key_name = std::path::Path::new(&run.argv[2])
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                keys::record_copy(&key_name, &run.argv[3]);
             }
 
             let msg = match status {
@@ -1499,6 +1599,7 @@ mod tests {
             kind: "ED25519".into(),
             comment: String::new(),
             fingerprint: String::new(),
+            copied_to: Vec::new(),
         }];
         app.key_state.select(Some(0));
         app.view = View::Keys;
@@ -1538,6 +1639,21 @@ mod tests {
         // Backdate it past the TTL: a stale message must stop showing.
         app.status_at = Instant::now().checked_sub(STATUS_TTL * 2);
         assert!(app.live_status().is_none());
+    }
+
+    #[test]
+    fn keygen_command_preview_tracks_fields() {
+        let mut p = Prompt::new_key("ed25519");
+        p.fields[0].value = "work".into();
+        p.fields[1].value = "me@x".into();
+        assert_eq!(p.command_preview().unwrap(), "ssh-keygen -t ed25519 -f ~/.ssh/work -C me@x");
+
+        // RSA always gets -b 4096; a blank name falls back to id_<kind>.
+        let rsa = Prompt::new_key("rsa");
+        assert_eq!(rsa.command_preview().unwrap(), "ssh-keygen -t rsa -f ~/.ssh/id_rsa -b 4096");
+
+        // Config-writing wizards have no single command to preview.
+        assert!(Prompt::add_host().command_preview().is_none());
     }
 
     #[test]
