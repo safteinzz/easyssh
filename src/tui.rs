@@ -107,7 +107,7 @@ impl Prompt {
                 Field::new("HostName (IP or DNS name)", ""),
                 Field::new("User", ""),
                 Field::new("Port", "22"),
-                Field::new("IdentityFile (key path, optional)", ""),
+                Field::new("IdentityFile (Ctrl-o to pick a key, optional)", ""),
             ],
         }
     }
@@ -123,7 +123,7 @@ impl Prompt {
                 Field::filled("HostName (IP or DNS name)", h.hostname.as_deref().unwrap_or("")),
                 Field::filled("User", h.user.as_deref().unwrap_or("")),
                 Field::filled("Port", h.port.as_deref().unwrap_or("")),
-                Field::filled("IdentityFile (key path, optional)", h.identity.as_deref().unwrap_or("")),
+                Field::filled("IdentityFile (Ctrl-o to pick a key, optional)", h.identity.as_deref().unwrap_or("")),
             ],
         }
     }
@@ -231,6 +231,9 @@ struct Picker {
 enum PickerAction {
     CopyKeyTo { key: PathBuf },
     NewKeyType,
+    /// Write the chosen value into the active wizard's field at this index (used
+    /// to pick a key for IdentityFile instead of typing the path).
+    FillField { field: usize },
 }
 
 /// A titled yes/no modal: confirm a destructive action, or offer a fix after
@@ -438,6 +441,12 @@ impl App {
                 ],
                 label: format!("ssh-copy-id -> {choice}"),
             }),
+            PickerAction::FillField { field } => {
+                if let Some(f) = self.prompt.as_mut().and_then(|p| p.fields.get_mut(field)) {
+                    f.value = choice;
+                }
+                None
+            }
         }
     }
 
@@ -697,6 +706,28 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let len = self.prompt.as_ref().map(|p| p.fields.len()).unwrap_or(0);
         if len == 0 {
+            return None;
+        }
+
+        // On the IdentityFile field, Ctrl-o opens a picker of ~/.ssh keys so you
+        // choose one instead of typing the path; typing still works for anything
+        // custom. Only meaningful on that field, so it is a no-op elsewhere.
+        if ctrl && key.code == KeyCode::Char('o') {
+            let p = self.prompt.as_ref().unwrap();
+            if p.fields[p.idx].label.contains("IdentityFile") {
+                let idx = p.idx;
+                let items: Vec<String> = keys::list().iter().map(|k| format!("~/.ssh/{}", k.name())).collect();
+                if items.is_empty() {
+                    self.set_status("no keys in ~/.ssh to pick");
+                } else {
+                    self.picker = Some(Picker {
+                        title: "Pick a key for IdentityFile".into(),
+                        items,
+                        idx: 0,
+                        action: PickerAction::FillField { field: idx },
+                    });
+                }
+            }
             return None;
         }
 
@@ -1654,6 +1685,24 @@ mod tests {
 
         // Config-writing wizards have no single command to preview.
         assert!(Prompt::add_host().command_preview().is_none());
+    }
+
+    #[test]
+    fn picker_fills_identityfile_field() {
+        // A key chosen from the picker lands in the wizard's IdentityFile field,
+        // so the user never has to type the path.
+        let mut app = App::empty();
+        app.prompt = Some(Prompt::add_host());
+        let idx = app.prompt.as_ref().unwrap().fields.iter().position(|f| f.label.contains("IdentityFile")).unwrap();
+        app.picker = Some(Picker {
+            title: "pick".into(),
+            items: vec!["~/.ssh/id_ed25519".into()],
+            idx: 0,
+            action: PickerAction::FillField { field: idx },
+        });
+        app.on_key(press(KeyCode::Enter));
+        assert!(app.picker.is_none());
+        assert_eq!(app.prompt.as_ref().unwrap().fields[idx].value, "~/.ssh/id_ed25519");
     }
 
     #[test]

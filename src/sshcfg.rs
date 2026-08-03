@@ -63,11 +63,34 @@ pub fn config_path() -> PathBuf {
 /// wildcard/pattern blocks like `Host *` which aren't real destinations.
 /// Sorted by alias so the listing and TUI are stable.
 pub fn list_hosts() -> Vec<Host> {
-    let mut hosts = Vec::new();
-    parse_file(&config_path(), &mut hosts);
-    hosts.retain(|h| !is_pattern(&h.alias));
-    hosts.sort_by(|a, b| a.alias.cmp(&b.alias));
-    hosts
+    let mut parsed = Vec::new();
+    parse_file(&config_path(), &mut parsed);
+    merge_hosts(parsed)
+}
+
+/// Collapse blocks that name the same alias into one entry. A host is commonly
+/// split across blocks (a per-host block for HostName/User plus a shared
+/// `Host a b c` block adding one IdentityFile to several hosts); ssh takes the
+/// first value seen for each keyword, so we fill only the gaps in file order.
+/// Pattern aliases (`*`, `?`, `!`) are dropped; the result is sorted by alias.
+fn merge_hosts(parsed: Vec<Host>) -> Vec<Host> {
+    let mut merged: Vec<Host> = Vec::new();
+    for h in parsed {
+        if is_pattern(&h.alias) {
+            continue;
+        }
+        if let Some(e) = merged.iter_mut().find(|e| e.alias == h.alias) {
+            // `take().or(new)` keeps the earlier (first) value, filling if unset.
+            e.hostname = e.hostname.take().or(h.hostname);
+            e.user = e.user.take().or(h.user);
+            e.port = e.port.take().or(h.port);
+            e.identity = e.identity.take().or(h.identity);
+        } else {
+            merged.push(h);
+        }
+    }
+    merged.sort_by(|a, b| a.alias.cmp(&b.alias));
+    merged
 }
 
 /// True for aliases that are match patterns rather than concrete hosts.
@@ -212,13 +235,16 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 // other line through verbatim. The `*_in` helpers take an explicit path so the
 // tests can exercise them against a temp file instead of the real ~/.ssh/config.
 
-/// Append a new `Host` block to the main config (never touches existing entries).
+/// Add a new host. Normally appends a self-contained `Host` block, but if the
+/// chosen IdentityFile already belongs to a shared block (a `Host a b c` line
+/// with 2+ aliases), the new alias is appended to that block instead, so a
+/// user's DRY grouping stays intact rather than growing a duplicate key line.
 pub fn add_host(h: &NewHost) -> Result<()> {
     let dir = ssh_dir();
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     harden(&dir, 0o700);
     let cfg = config_path();
-    append_host_in(&cfg, h)?;
+    add_host_in(&cfg, h)?;
     harden(&cfg, 0o600);
     Ok(())
 }
@@ -237,17 +263,91 @@ pub fn delete_host(alias: &str) -> Result<()> {
     delete_host_in(&config_path(), alias)
 }
 
-fn append_host_in(cfg: &Path, h: &NewHost) -> Result<()> {
+fn add_host_in(cfg: &Path, h: &NewHost) -> Result<()> {
     if cfg.exists() {
         backup(cfg)?;
     }
-    let mut text = fs::read_to_string(cfg).unwrap_or_default();
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
+    let text = fs::read_to_string(cfg).unwrap_or_default();
+    let identity = h.identity.trim();
+
+    // If exactly one shared block already points that key at 2+ hosts, join it:
+    // append the alias to its `Host` line and give the new host a block WITHOUT
+    // its own IdentityFile (the group block supplies it). ssh merges the two.
+    if !identity.is_empty() {
+        let lines: Vec<&str> = text.lines().collect();
+        if let Some(i) = unique_group_block_for_identity(&lines, identity) {
+            let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+            out[i] = format!("{} {}", out[i].trim_end(), h.alias.trim());
+            let mut body = out.join("\n");
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            let per_host = NewHost {
+                alias: h.alias.clone(),
+                hostname: h.hostname.clone(),
+                user: h.user.clone(),
+                port: h.port.clone(),
+                identity: String::new(),
+            };
+            body.push('\n');
+            body.push_str(&render_block(&per_host));
+            return fs::write(cfg, body).with_context(|| format!("writing {}", cfg.display()));
+        }
     }
-    text.push('\n'); // blank line separates the new block from what precedes it
-    text.push_str(&render_block(h));
-    fs::write(cfg, text).with_context(|| format!("writing {}", cfg.display()))
+
+    // Default: a self-contained block carrying its own IdentityFile.
+    let mut out = text;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n'); // blank line separates the new block from what precedes it
+    out.push_str(&render_block(h));
+    fs::write(cfg, out).with_context(|| format!("writing {}", cfg.display()))
+}
+
+/// The `Host`-line index of the single shared block (2+ concrete aliases) whose
+/// `IdentityFile` equals `identity`. `None` if there are zero or several, so we
+/// never guess: a one-alias block is a normal per-host block, not a group.
+fn unique_group_block_for_identity(lines: &[&str], identity: &str) -> Option<usize> {
+    let mut candidates = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if line.is_empty() || line.starts_with('#') {
+            i += 1;
+            continue;
+        }
+        let (key, value) = split_kv(line);
+        if !key.eq_ignore_ascii_case("host") {
+            i += 1;
+            continue;
+        }
+        let host_idx = i;
+        let aliases: Vec<&str> = value.split_whitespace().collect();
+        let is_group = aliases.len() >= 2 && !aliases.iter().any(|a| is_pattern(a));
+
+        // Scan this block for a matching IdentityFile, up to the next Host/Match.
+        let mut matches = false;
+        let mut j = i + 1;
+        while j < lines.len() {
+            let l = lines[j].trim();
+            if !l.is_empty() && !l.starts_with('#') {
+                let (k, v) = split_kv(l);
+                if k.eq_ignore_ascii_case("host") || k.eq_ignore_ascii_case("match") {
+                    break;
+                }
+                if k.eq_ignore_ascii_case("identityfile") && v.trim() == identity {
+                    matches = true;
+                }
+            }
+            j += 1;
+        }
+        if is_group && matches {
+            candidates.push(host_idx);
+        }
+        i = j;
+    }
+    (candidates.len() == 1).then(|| candidates[0])
 }
 
 fn update_host_in(cfg: &Path, original: &str, h: &NewHost) -> Result<()> {
@@ -433,6 +533,31 @@ Host a b
     }
 
     #[test]
+    fn split_blocks_merge_into_one_host() {
+        // A per-host block plus a shared block adding a key to several hosts: ssh
+        // merges them, so essh must list each alias once with both sets of fields.
+        let cfg = "\
+Host alpha
+    HostName 10.0.0.1
+    User deploy
+
+Host beta
+    HostName 10.0.0.2
+    User deploy
+
+# shared fleet key
+Host alpha beta
+    IdentityFile ~/.ssh/id_fleet
+";
+        let hosts = merge_hosts(parse_str(cfg));
+        assert_eq!(hosts.len(), 2, "each alias appears once, not per block");
+        let alpha = hosts.iter().find(|h| h.alias == "alpha").unwrap();
+        assert_eq!(alpha.hostname.as_deref(), Some("10.0.0.1"));
+        assert_eq!(alpha.user.as_deref(), Some("deploy"));
+        assert_eq!(alpha.identity.as_deref(), Some("~/.ssh/id_fleet"));
+    }
+
+    #[test]
     fn equals_separator_and_comments() {
         let hosts = parse_str("# a comment\nHost=x\n  HostName=1.2.3.4\n");
         assert_eq!(hosts.len(), 1);
@@ -457,11 +582,53 @@ Host a b
             port: "22".into(),
             identity: String::new(),
         };
-        append_host_in(&cfg, &nh).unwrap();
+        add_host_in(&cfg, &nh).unwrap();
         let hosts = parse_str(&fs::read_to_string(&cfg).unwrap());
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].alias, "box");
         assert_eq!(hosts[0].user.as_deref(), Some("me"));
+        fs::remove_file(&cfg).ok();
+    }
+
+    #[test]
+    fn add_with_key_joins_existing_shared_block() {
+        // A shared block already points id_fleet at 2 hosts; adding a third host
+        // with that key appends it to the group, not a duplicate key line.
+        let cfg = temp_cfg("Host alpha beta\n    IdentityFile ~/.ssh/id_fleet\n    IdentitiesOnly yes\n");
+        let nh = NewHost {
+            alias: "gamma".into(),
+            hostname: "10.0.0.3".into(),
+            user: "deploy".into(),
+            port: String::new(),
+            identity: "~/.ssh/id_fleet".into(),
+        };
+        add_host_in(&cfg, &nh).unwrap();
+        let text = fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains("Host alpha beta gamma"), "alias joined the group line");
+        assert_eq!(text.matches("IdentityFile ~/.ssh/id_fleet").count(), 1, "no duplicate key line");
+        // ssh (and our merge) still resolve gamma's key from the group.
+        let gamma = merge_hosts(parse_str(&text)).into_iter().find(|h| h.alias == "gamma").unwrap();
+        assert_eq!(gamma.identity.as_deref(), Some("~/.ssh/id_fleet"));
+        assert_eq!(gamma.hostname.as_deref(), Some("10.0.0.3"));
+        fs::remove_file(&cfg).ok();
+    }
+
+    #[test]
+    fn add_with_key_writes_own_block_when_no_group() {
+        // A single-alias block with that key is a normal per-host block, not a
+        // group, so a new host gets its own IdentityFile rather than joining it.
+        let cfg = temp_cfg("Host solo\n    IdentityFile ~/.ssh/id_fleet\n");
+        let nh = NewHost {
+            alias: "gamma".into(),
+            hostname: "10.0.0.3".into(),
+            user: String::new(),
+            port: String::new(),
+            identity: "~/.ssh/id_fleet".into(),
+        };
+        add_host_in(&cfg, &nh).unwrap();
+        let text = fs::read_to_string(&cfg).unwrap();
+        assert!(!text.contains("Host solo gamma"), "must not join a one-alias block");
+        assert_eq!(text.matches("IdentityFile ~/.ssh/id_fleet").count(), 2, "gamma got its own key line");
         fs::remove_file(&cfg).ok();
     }
 
