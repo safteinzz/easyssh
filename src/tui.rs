@@ -1107,7 +1107,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                 .keys
                 .iter()
                 .map(|k| {
-                    let mut spans = vec![
+                    ListItem::new(Line::from(vec![
                         Span::styled(format!("{:nw$}", k.name()), bold),
                         Span::raw("  "),
                         Span::styled(format!("{:7}", k.kind), Style::default().fg(Color::Cyan)),
@@ -1115,15 +1115,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                         Span::styled(k.fingerprint.clone(), dim),
                         Span::raw("  "),
                         Span::styled(k.comment.clone(), dim),
-                    ];
-                    // Where this key has been copied (ssh-copy-id history).
-                    if !k.copied_to.is_empty() {
-                        spans.push(Span::styled(
-                            format!("  → {}", k.copied_to.join(", ")),
-                            Style::default().fg(Color::Green),
-                        ));
-                    }
-                    ListItem::new(Line::from(spans))
+                    ]))
                 })
                 .collect();
             let list = List::new(items)
@@ -1357,16 +1349,6 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 if let Some(target) = changed_host_key(&host) {
                     app.offer_known_hosts_fix(&host, target);
                 }
-            }
-
-            let ok = matches!(status, Some(ref s) if s.success());
-            // Log a successful ssh-copy-id so the Keys tab shows where a key went.
-            if ok && run.argv.first().map(|a| a == "ssh-copy-id").unwrap_or(false) && run.argv.len() >= 4 {
-                let key_name = std::path::Path::new(&run.argv[2])
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                keys::record_copy(&key_name, &run.argv[3]);
             }
 
             let msg = match status {
@@ -1630,7 +1612,6 @@ mod tests {
             kind: "ED25519".into(),
             comment: String::new(),
             fingerprint: String::new(),
-            copied_to: Vec::new(),
         }];
         app.key_state.select(Some(0));
         app.view = View::Keys;

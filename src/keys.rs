@@ -2,11 +2,9 @@
 //! generate new ones, and copy them to hosts - the "organizing keys? WHEN is a
 //! mess" problem. We treat any `*.pub` with a matching private file as a key.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One keypair on disk, with the human-facing details pulled from its `.pub`.
 pub struct Key {
@@ -18,8 +16,6 @@ pub struct Key {
     pub comment: String,
     /// `SHA256:…` fingerprint from `ssh-keygen -lf`.
     pub fingerprint: String,
-    /// Hosts this key has been copied to (via ssh-copy-id), newest first.
-    pub copied_to: Vec<String>,
 }
 
 impl Key {
@@ -42,7 +38,6 @@ pub fn list() -> Vec<Key> {
         return keys;
     };
 
-    let history = copy_history();
     for entry in entries.flatten() {
         let pubpath = entry.path();
         // We iterate `.pub` files and derive the private path by dropping `.pub`.
@@ -54,11 +49,9 @@ pub fn list() -> Vec<Key> {
             continue;
         }
 
-        let name = priv_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (kind, comment) = parse_pub(&pubpath);
         keys.push(Key {
             fingerprint: fingerprint(&pubpath),
-            copied_to: history.get(&name).cloned().unwrap_or_default(),
             path: priv_path,
             kind,
             comment,
@@ -67,49 +60,6 @@ pub fn list() -> Vec<Key> {
 
     keys.sort_by_key(|k| k.name());
     keys
-}
-
-/// Where the copy log lives: `~/.local/state/easyssh/copied-keys.tsv`.
-fn history_path() -> PathBuf {
-    dirs::state_dir()
-        .or_else(dirs::data_local_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("easyssh")
-        .join("copied-keys.tsv")
-}
-
-/// Append a `key -> host` record after a successful ssh-copy-id, so the Keys tab
-/// can show where each key has been installed. TSV: `epoch\tkeyname\thost`.
-pub fn record_copy(key_name: &str, host: &str) {
-    let path = history_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    use std::io::Write;
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{stamp}\t{key_name}\t{host}");
-    }
-}
-
-/// Map of key name to the hosts it was copied to, newest first, deduped.
-fn copy_history() -> HashMap<String, Vec<String>> {
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    let Ok(text) = fs::read_to_string(history_path()) else {
-        return map;
-    };
-    // Read newest first so the most recent copy of a key/host pair wins its slot.
-    for line in text.lines().rev() {
-        let mut f = line.split('\t');
-        let (Some(_stamp), Some(name), Some(host)) = (f.next(), f.next(), f.next()) else {
-            continue;
-        };
-        let hosts = map.entry(name.to_string()).or_default();
-        if !hosts.iter().any(|h| h == host) {
-            hosts.push(host.to_string());
-        }
-    }
-    map
 }
 
 /// A `.pub` line is `"<type> <base64> [comment...]"`. Return (pretty type, comment).
