@@ -2,7 +2,9 @@
 
 > **Canonical:** [gitlab.com/safteinzz/easyssh](https://gitlab.com/safteinzz/easyssh) · **Mirror:** [github.com/safteinzz/easyssh](https://github.com/safteinzz/easyssh)
 
-**Make ssh easy.** One command - `essh` - for connecting, keys, tunnels, mounts
+**Stop typing flags, make ssh easy.** 🔐
+
+One command - `essh` - for connecting, keys, tunnels, mounts
 and file copies. It shells out to the real ssh tools, so your existing config,
 agent and keys just work, and it teaches you the command behind every action so
 you are never stuck without it.
