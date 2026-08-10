@@ -44,12 +44,13 @@ enum View {
 
 const VIEWS: [View; 4] = [View::Hosts, View::Keys, View::Tunnels, View::Mounts];
 
-// Labels read "meaning (real command)": the plain verb so a newcomer can scan by
-// intent, the command in parens so they learn the tool they'd need without us.
-const HOSTS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · ↵ connect · c new · e edit · d del · m mount (sshfs) · t/T tunnel (ssh -L/-R) · R fix key (ssh-keygen -R) · ? help · q quit";
-const KEYS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · c new key (ssh-keygen) · y yank to host (ssh-copy-id) · ? help · q quit";
-const TUNNELS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d kill · r refresh · ? help · q quit";
-const MOUNTS_HINTS: &str = "j/k ↑↓ move · h/l ←→ view · d unmount (fusermount -u) · r refresh · ? help · q quit";
+// The bottom bar is a terse reminder of this view's actions only; `?` opens the
+// full cheat-sheet (navigation keys and the real command behind each action), so
+// the bar stays short instead of restating everything and overflowing.
+const HOSTS_HINTS: &str = "↵ connect · c new · e edit · d del · m mount · t/T tunnel · R fix-key · ? help";
+const KEYS_HINTS: &str = "c new · y copy to host · ? help";
+const TUNNELS_HINTS: &str = "d kill · r refresh · ? help";
+const MOUNTS_HINTS: &str = "d unmount · r refresh · ? help";
 
 /// How long a status message stays on screen before the hints return.
 const STATUS_TTL: Duration = Duration::from_millis(1500);
@@ -1216,7 +1217,7 @@ fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "  Enter next/submit   Ctrl-j/k · Ctrl-↑↓ · Tab move field   Esc cancel",
+        "  Enter next/submit   Ctrl-j/k · Ctrl-↑↓ · Tab move field · Esc cancel",
         Style::default().add_modifier(Modifier::DIM),
     )));
 
@@ -1259,7 +1260,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         Line::raw("Mounts    d unmount (fusermount -u <dir>)           r refresh"),
         Line::raw(""),
         Line::raw("In a form  type to fill (h/j/k/l are text!)"),
-        Line::raw("           Ctrl-j/k · Ctrl-↑↓ · Tab move between fields   Esc cancel"),
+        Line::raw("           Ctrl-j/k · Ctrl-↑↓ · Tab move between fields · Esc cancel"),
         Line::raw(""),
         Line::from(Span::styled("press ? or Esc to close", dim)),
     ];

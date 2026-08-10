@@ -1,10 +1,13 @@
 [package]
 name = "easyssh"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2024"
 description = "make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI"
 license = "AGPL-3.0-only"
 repository = "https://gitlab.com/safteinzz/easyssh"
+# README screenshots are fetched over the network by crates.io via absolute raw
+# URLs, never read from the package, so keep them out of the published tarball.
+exclude = ["readme-assets/"]
 
 # The crate is `easyssh`, but the command you type is the shorter `essh`
 # (ssh + one letter - muscle memory carries, no dangerous typo of real `ssh`).
