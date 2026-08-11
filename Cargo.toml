@@ -2,7 +2,7 @@
 name = "easyssh"
 version = "0.2.9"
 edition = "2024"
-description = "make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI"
+description = "stop typing flags, make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI"
 license = "AGPL-3.0-only"
 repository = "https://gitlab.com/safteinzz/easyssh"
 # README screenshots are fetched over the network by crates.io via absolute raw
