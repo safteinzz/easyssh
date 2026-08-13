@@ -37,7 +37,7 @@ Run `essh <command> --help` for a command's details.";
     name = "easyssh",
     bin_name = "essh",
     version,
-    about = "make ssh easy - hosts, keys, tunnels, mounts and copies in one tool",
+    about,
     after_help = AFTER
 )]
 struct Cli {

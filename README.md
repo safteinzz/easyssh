@@ -2,12 +2,9 @@
 
 > **Canonical:** [gitlab.com/safteinzz/easyssh](https://gitlab.com/safteinzz/easyssh) · **Mirror:** [github.com/safteinzz/easyssh](https://github.com/safteinzz/easyssh)
 
-**Stop typing flags, make ssh easy.** 🔐
-
-One command - `essh` - for connecting, keys, tunnels, mounts
-and file copies. It shells out to the real ssh tools, so your existing config,
-agent and keys just work, and it teaches you the command behind every action so
-you are never stuck without it.
+<!-- desc:start -->
+stop typing flags, make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI
+<!-- desc:end -->
 
 ```sh
 cargo install easyssh          # installs the `essh` command
