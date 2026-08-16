@@ -61,15 +61,56 @@ struct Field {
     label: String,
     default: String,
     value: String,
+    kind: Kind,
+    /// Which option a `Choice` field has selected. Unused by the other kinds.
+    choice: usize,
+    /// Only shown, and only reachable, while field `.0`'s choice is one of `.1`.
+    /// Hidden fields keep their slot in the vec, so field indices stay stable.
+    show_if: Option<(usize, Vec<usize>)>,
+}
+
+enum Kind {
+    Text,
+    /// A fixed set of answers cycled in place with `h`/`l` or the arrows. Nothing
+    /// is typed here, which is what frees up plain `h`/`l` inside a wizard.
+    Choice(Vec<String>),
 }
 
 impl Field {
     fn new(label: &str, default: &str) -> Self {
-        Self { label: label.into(), default: default.into(), value: String::new() }
+        Self {
+            label: label.into(),
+            default: default.into(),
+            value: String::new(),
+            kind: Kind::Text,
+            choice: 0,
+            show_if: None,
+        }
     }
     /// A field that starts pre-filled with `value` - for the edit wizard.
     fn filled(label: &str, value: &str) -> Self {
-        Self { label: label.into(), default: String::new(), value: value.into() }
+        Self { value: value.into(), ..Self::new(label, "") }
+    }
+    fn choice(label: &str, options: &[&str]) -> Self {
+        let options = options.iter().map(|o| o.to_string()).collect();
+        Self { kind: Kind::Choice(options), ..Self::new(label, "") }
+    }
+    /// Builder: show this field only while field `on`'s choice is one of `values`.
+    fn shown_when(mut self, on: usize, values: &[usize]) -> Self {
+        self.show_if = Some((on, values.to_vec()));
+        self
+    }
+
+    /// What the wizard paints for this field's value.
+    fn display(&self) -> String {
+        match &self.kind {
+            Kind::Text => self.value.clone(),
+            Kind::Choice(options) => format!("‹ {} ›", options[self.choice]),
+        }
+    }
+
+    fn is_choice(&self) -> bool {
+        matches!(self.kind, Kind::Choice(_))
     }
 }
 
@@ -149,6 +190,10 @@ impl Prompt {
             fields: vec![
                 Field::new("Remote path", "~ (home)"),
                 Field::new("Local mountpoint", &format!("./sshfs/{host}")),
+                Field::choice("Remote rights", &["your user (no sudo)", "root (requires NOPASSWD sudo)"]),
+                // Only the sudo mode needs the server-side binary, so it stays
+                // hidden for a plain mount.
+                Field::new("sftp-server on the server", SFTP_SERVER).shown_when(2, &[1]),
             ],
         }
     }
@@ -177,6 +222,34 @@ impl Prompt {
         }
     }
 
+    /// Whether field `i` applies to the answers given so far. Hidden fields keep
+    /// their slot so indices stay stable, but are neither drawn nor reachable.
+    fn visible(&self, i: usize) -> bool {
+        match &self.fields[i].show_if {
+            None => true,
+            Some((on, values)) => values.contains(&self.fields[*on].choice),
+        }
+    }
+
+    /// The next visible field in `dir` (+1/-1), wrapping. Falls back to the
+    /// current index, so a wizard whose fields all vanished cannot spin forever.
+    fn step(&self, dir: isize) -> usize {
+        let len = self.fields.len();
+        let mut i = self.idx;
+        for _ in 0..len {
+            i = (i as isize + dir).rem_euclid(len as isize) as usize;
+            if self.visible(i) {
+                return i;
+            }
+        }
+        self.idx
+    }
+
+    /// True when there is no visible field after this one, so Enter submits.
+    fn on_last_field(&self) -> bool {
+        !(self.idx + 1..self.fields.len()).any(|i| self.visible(i))
+    }
+
     /// The exact command this wizard will run, rebuilt from the current field
     /// values so it updates live as you type. `None` for wizards that write the
     /// config rather than run one command. Resolution mirrors `submit_prompt`.
@@ -195,8 +268,9 @@ impl Prompt {
                 Some(cmd)
             }
             Action::Mount { host } => {
-                let local = if v(1).is_empty() { format!("./sshfs/{host}") } else { v(1).to_string() };
-                Some(format!("sshfs {host}:{} {local}", v(0)))
+                // Built from the same spec the run path uses, so the mountpoint
+                // and the sudo wrapping shown here are exactly what gets executed.
+                Some(shell_join(&MountSpec::from_fields(host, &self.fields).argv()))
             }
             Action::Forward { host } => {
                 let remote = v(0);
@@ -211,6 +285,107 @@ impl Prompt {
             Action::AddHost | Action::EditHost { .. } => None,
         }
     }
+}
+
+/// The local mountpoint a mount wizard will use: `./sshfs/<host>` when the field
+/// is blank (so leftovers stay grouped), with a typed `~` expanded because sshfs
+/// is spawned without a shell and would otherwise mount onto a directory named
+/// `~`. Shared by `submit_prompt` and `command_preview` so the preview cannot
+/// drift from the command that actually runs.
+fn mount_point(host: &str, typed: &str) -> String {
+    let raw = if typed.is_empty() { format!("./sshfs/{host}") } else { typed.to_string() };
+    sshcfg::expand_tilde(&raw).to_string_lossy().into_owned()
+}
+
+/// Where OpenSSH's sftp server usually lives. Distros move it (`/usr/libexec/
+/// openssh/`, `/usr/lib/ssh/`), and nothing local can see the remote layout, so
+/// this is an editable default rather than a guess we hide.
+const SFTP_SERVER: &str = "/usr/lib/openssh/sftp-server";
+
+/// Who the remote side runs the sftp server as. Mirrors the "Remote rights"
+/// choice field, in the same order.
+///
+/// There is deliberately no "send the password" mode: sshfs's channel has no
+/// terminal for sudo to prompt on, and every way of feeding one from here puts
+/// the password in a command line, where `ps` shows it to every user on both
+/// machines. A NOPASSWD sudoers line scoped to the sftp server is the safe
+/// equivalent.
+#[derive(Clone, Copy, PartialEq)]
+enum Sudo {
+    /// Plain sshfs: the login user's own rights.
+    No,
+    /// `sudo sftp-server`, which needs a NOPASSWD sudoers line on the server.
+    NoPasswd,
+}
+
+impl Sudo {
+    fn from_choice(i: usize) -> Self {
+        if i == 1 { Sudo::NoPasswd } else { Sudo::No }
+    }
+}
+
+/// A mount resolved from the wizard's fields. The run path and the live preview
+/// both build their command from this, so the preview cannot drift from what
+/// actually runs.
+struct MountSpec {
+    host: String,
+    remote: String,
+    local: String,
+    sudo: Sudo,
+    server: String,
+}
+
+impl MountSpec {
+    fn from_fields(host: &str, fields: &[Field]) -> Self {
+        let v = |i: usize| fields[i].value.trim();
+        let server = if v(3).is_empty() { SFTP_SERVER.to_string() } else { v(3).to_string() };
+        Self {
+            host: host.to_string(),
+            remote: v(0).to_string(),
+            local: mount_point(host, v(1)),
+            sudo: Sudo::from_choice(fields[2].choice),
+            server,
+        }
+    }
+
+    /// The `-o sftp_server=…` value, or `None` for a plain mount.
+    fn sftp_server(&self) -> Option<String> {
+        match self.sudo {
+            Sudo::No => None,
+            Sudo::NoPasswd => Some(format!("sftp_server=sudo {}", self.server)),
+        }
+    }
+
+    fn argv(&self) -> Vec<String> {
+        let mut argv = vec!["sshfs".to_string()];
+        if let Some(opt) = self.sftp_server() {
+            argv.push("-o".into());
+            argv.push(opt);
+        }
+        argv.push(format!("{}:{}", self.host, self.remote));
+        argv.push(self.local.clone());
+        argv
+    }
+
+    /// Why this mount cannot be built, if so - checked before spawning so the
+    /// user gets a sentence instead of a puzzling sshfs failure.
+    fn problem(&self) -> Option<String> {
+        // sshfs splits `-o` values on commas, so one inside the option is read as
+        // the start of another option and the mount fails with nothing useful.
+        if self.sudo != Sudo::No && self.server.contains(',') {
+            return Some("mount: sshfs splits -o on commas, so this path cannot be sent".into());
+        }
+        None
+    }
+}
+
+/// Render an argv the way you would type it, quoting the arguments that contain
+/// spaces. Only used for the preview line, never to run anything.
+fn shell_join(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// An external command the event loop must run *suspended* (outside the TUI) so
@@ -243,6 +418,15 @@ struct Confirm {
     title: String,
     message: String,
     action: ConfirmAction,
+    /// Which button is selected. Starts on No: these modals gate destructive or
+    /// forceful things, so a reflex Enter must never be the one that fires them.
+    yes: bool,
+}
+
+impl Confirm {
+    fn new(title: impl Into<String>, message: impl Into<String>, action: ConfirmAction) -> Self {
+        Self { title: title.into(), message: message.into(), action, yes: false }
+    }
 }
 
 enum ConfirmAction {
@@ -451,15 +635,34 @@ impl App {
         }
     }
 
-    /// Resolve a pending yes/no gate. Only `y`/`Enter` proceeds; anything else
-    /// (including `n`/`Esc`) cancels.
+    /// Resolve a pending yes/no gate. `y` proceeds and `n`/`Esc` cancels outright,
+    /// or move between the buttons (`h`/`l`, the arrows, Tab) and press Enter.
+    /// Any other key is ignored so a stray keypress cannot dismiss the modal.
     fn confirm_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
-        let proceed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter);
-        let c = self.confirm.take()?;
-        if !proceed {
-            self.set_status("cancelled");
-            return None;
+        use KeyCode::*;
+        match key.code {
+            Left | Right | Char('h') | Char('l') | Tab | BackTab => {
+                if let Some(c) = self.confirm.as_mut() {
+                    c.yes = !c.yes;
+                }
+                return None;
+            }
+            Char('n') | Char('N') | Esc => {
+                self.confirm = None;
+                self.set_status("cancelled");
+                return None;
+            }
+            Char('y') | Char('Y') => {}
+            Enter => {
+                if !self.confirm.as_ref().is_some_and(|c| c.yes) {
+                    self.confirm = None;
+                    self.set_status("cancelled");
+                    return None;
+                }
+            }
+            _ => return None,
         }
+        let c = self.confirm.take()?;
         match c.action {
             ConfirmAction::DeleteHost(alias) => match sshcfg::delete_host(&alias) {
                 Ok(_) => {
@@ -490,13 +693,13 @@ impl App {
 
     /// Show the "host key changed" modal offering the `ssh-keygen -R` fix.
     fn offer_known_hosts_fix(&mut self, host: &str, target: String) {
-        self.confirm = Some(Confirm {
-            title: "WARNING: host key changed".into(),
-            message: format!(
+        self.confirm = Some(Confirm::new(
+            "WARNING: host key changed",
+            format!(
                 "{host}'s key no longer matches ~/.ssh/known_hosts. Usually the server was reinstalled or its IP was reused; rarely it is a man-in-the-middle. Only if you trust this change, drop the saved key (ssh-keygen -R {target}) and reconnect. Remove it now?"
             ),
-            action: ConfirmAction::ClearKnownHost { target },
-        });
+            ConfirmAction::ClearKnownHost { target },
+        ));
     }
 
     fn nav_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
@@ -573,11 +776,11 @@ impl App {
             }
             KeyCode::Char('d') => {
                 let alias = self.selected_host()?.alias.clone();
-                self.confirm = Some(Confirm {
-                    title: "delete host".into(),
-                    message: format!("Delete host '{alias}' from ~/.ssh/config?"),
-                    action: ConfirmAction::DeleteHost(alias),
-                });
+                self.confirm = Some(Confirm::new(
+                    "delete host",
+                    format!("Delete host '{alias}' from ~/.ssh/config?"),
+                    ConfirmAction::DeleteHost(alias),
+                ));
                 None
             }
             // Clear a host's stale key from known_hosts (the "REMOTE HOST
@@ -683,13 +886,13 @@ impl App {
                         self.set_status(format!("fusermount -u {local}: unmounted"));
                     }
                     Err(e) => {
-                        self.confirm = Some(Confirm {
-                            title: "unmount failed".into(),
-                            message: format!(
+                        self.confirm = Some(Confirm::new(
+                            "unmount failed",
+                            format!(
                                 "{local}: {e}. Something is still using it (a shell cd'd in, or an open file). Force a lazy unmount (fusermount -u -z)? It detaches now and the kernel frees it once nothing uses it."
                             ),
-                            action: ConfirmAction::LazyUnmount { local },
-                        });
+                            ConfirmAction::LazyUnmount { local },
+                        ));
                     }
                 }
                 None
@@ -732,10 +935,35 @@ impl App {
             return None;
         }
 
-        // Field navigation. Plain h/j/k/l are *typed* here (you're filling a text
-        // field), so a vim user moves between fields with the Ctrl-chords or the
-        // arrows/Tab - exactly the "submenu" rule. Ctrl-Down/Up also carry ctrl,
-        // but their arm matches on the code so they land as next/prev too.
+        // A choice field types nothing, so the horizontal keys are free to switch
+        // its answer: h/l, the arrows, and the Ctrl-chords all cycle it. You leave
+        // it with Tab, Enter or the vertical keys.
+        {
+            let p = self.prompt.as_mut().unwrap();
+            if p.fields[p.idx].is_choice() {
+                let f = &mut p.fields[p.idx];
+                let n = match &f.kind {
+                    Kind::Choice(options) => options.len(),
+                    _ => unreachable!(),
+                };
+                match key.code {
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        f.choice = (f.choice + 1) % n;
+                        return None;
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        f.choice = (f.choice + n - 1) % n;
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Field navigation. Plain h/j/k/l are *typed* in a text field, so a vim
+        // user moves between fields with the Ctrl-chords or the arrows/Tab -
+        // exactly the "submenu" rule. Ctrl-Down/Up also carry ctrl, but their arm
+        // matches on the code so they land as next/prev too.
         let next = matches!(key.code, KeyCode::Tab | KeyCode::Down)
             || (ctrl && matches!(key.code, KeyCode::Char('j') | KeyCode::Char('l') | KeyCode::Right));
         let prev = matches!(key.code, KeyCode::BackTab | KeyCode::Up)
@@ -743,12 +971,12 @@ impl App {
 
         if next {
             let p = self.prompt.as_mut().unwrap();
-            p.idx = (p.idx + 1) % len;
+            p.idx = p.step(1);
             return None;
         }
         if prev {
             let p = self.prompt.as_mut().unwrap();
-            p.idx = (p.idx + len - 1) % len;
+            p.idx = p.step(-1);
             return None;
         }
 
@@ -763,19 +991,25 @@ impl App {
                 self.set_status("cancelled");
             }
             KeyCode::Enter => {
-                let idx = self.prompt.as_ref().unwrap().idx;
-                if idx + 1 < len {
-                    self.prompt.as_mut().unwrap().idx += 1;
-                } else {
+                let p = self.prompt.as_mut().unwrap();
+                if p.on_last_field() {
                     return self.submit_prompt();
                 }
+                p.idx = p.step(1);
             }
             KeyCode::Backspace => {
-                self.prompt.as_mut().unwrap().cur_mut().value.pop();
+                let f = self.prompt.as_mut().unwrap().cur_mut();
+                if !f.is_choice() {
+                    f.value.pop();
+                }
             }
             // Everything else with no Ctrl held is literal text - including h/j/k/l.
+            // A choice field holds no text, so stray keys must not accumulate in it.
             KeyCode::Char(c) if !ctrl => {
-                self.prompt.as_mut().unwrap().cur_mut().value.push(c);
+                let f = self.prompt.as_mut().unwrap().cur_mut();
+                if !f.is_choice() {
+                    f.value.push(c);
+                }
             }
             _ => {}
         }
@@ -863,10 +1097,13 @@ impl App {
                     return None;
                 }
                 // Blank remote path → sshfs mounts the login home directory.
-                let remote = v[0].clone();
-                // Mountpoints live under ./sshfs/<host> so an unmounted leftover
-                // dir does not clutter the home directory.
-                let local = if v[1].is_empty() { format!("./sshfs/{host}") } else { v[1].clone() };
+                let spec = MountSpec::from_fields(&host, &prompt.fields);
+                if let Some(problem) = spec.problem() {
+                    self.set_status(problem);
+                    self.prompt = Some(prompt);
+                    return None;
+                }
+                let local = spec.local.clone();
                 if let Err(e) = fs::create_dir_all(&local) {
                     self.set_status(format!("mount: cannot create {local}: {e}"));
                     return None;
@@ -874,7 +1111,7 @@ impl App {
                 // Jump to the Mounts tab so the result (success or empty) is visible.
                 self.view = View::Mounts;
                 Some(PendingRun {
-                    argv: vec!["sshfs".into(), format!("{host}:{remote}"), local.clone()],
+                    argv: spec.argv(),
                     label: format!("sshfs {host}: → {local}"),
                 })
             }
@@ -1005,7 +1242,9 @@ fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
     let width = (area.width * 66 / 100).clamp(34, 74);
     let inner = width.saturating_sub(6) as usize; // borders (2) + horizontal padding (4)
     let msg_rows = wrapped_line_count(&c.message, inner) as u16;
-    let height = (msg_rows + 4).min(area.height); // padding (2) + blank + hint
+    // borders (2) + vertical padding (2) + blank + buttons. Forgetting the borders
+    // here clipped the buttons off every modal, leaving no visible way to answer.
+    let height = (msg_rows + 6).min(area.height);
 
     let rect = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
@@ -1015,10 +1254,25 @@ fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
     };
     f.render_widget(Clear, rect);
 
+    // The selected button is highlighted, so the answer is visible at a glance
+    // rather than being a keystroke you had to know about.
+    let button = |label: &str, selected: bool| {
+        let style = if selected {
+            Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        };
+        Span::styled(format!(" {label} "), style)
+    };
     let lines = vec![
         Line::raw(c.message.clone()),
         Line::raw(""),
-        Line::from(Span::styled("y confirm      n / Esc cancel", Style::default().add_modifier(Modifier::DIM))),
+        Line::from(vec![
+            button("Yes (y)", c.yes),
+            Span::raw("  "),
+            button("No (n)", !c.yes),
+            Span::styled("   ←/→ then Enter", Style::default().add_modifier(Modifier::DIM)),
+        ]),
     ];
     let para = Paragraph::new(lines)
         .block(
@@ -1040,9 +1294,15 @@ fn wrapped_line_count(text: &str, width: usize) -> usize {
     }
     let mut rows = 1usize;
     let mut col = 0usize;
-    for word in text.split_whitespace() {
+    // Split on single spaces rather than runs of whitespace: the indent and the
+    // gap after "runs" are real columns, and collapsing them undercounted the
+    // rows enough to clip the line off the bottom of a wizard.
+    for (i, word) in text.split(' ').enumerate() {
         let w = word.chars().count();
-        let need = if col == 0 { w } else { col + 1 + w };
+        // Only the very first token has no space in front of it. Keying this off
+        // `col == 0` instead swallowed a column for every leading space, which
+        // undercounted the rows and clipped the last line off a box.
+        let need = if i == 0 { w } else { col + 1 + w };
         if need <= width {
             col = need;
         } else {
@@ -1185,9 +1445,21 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(Line::from(Span::styled(format!(" {text}"), style))), area);
 }
 
+/// Wizard box width, as the percentage of the area `centered` takes. The preview
+/// line can be far wider than the box (a sudo mount wraps to several rows), so
+/// the height has to be counted against the wrapped width, not the line count.
+const PROMPT_PCT: u16 = 72;
+
 fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
     let mut lines: Vec<Line> = vec![Line::raw("")];
+    // Plain text of every line, kept alongside so the box can be sized against
+    // what the lines wrap to rather than how many there are.
+    let mut texts: Vec<String> = vec![String::new()];
     for (i, field) in p.fields.iter().enumerate() {
+        // A field that does not apply to the answers so far is not drawn at all.
+        if !p.visible(i) {
+            continue;
+        }
         let active = i == p.idx;
         let head = if field.default.is_empty() {
             format!("{}: ", field.label)
@@ -1199,31 +1471,49 @@ fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
         } else {
             Style::default().add_modifier(Modifier::DIM)
         };
-        let cursor = if active { "█" } else { "" };
+        // A choice has no text cursor; it shows its options key instead, so the
+        // way to change it is on screen rather than something you must know.
+        let (value_style, tail) = if field.is_choice() {
+            let style = if active {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            (style, if active { "   h/l or ←/→" } else { "" })
+        } else {
+            (Style::default(), if active { "█" } else { "" })
+        };
+        texts.push(format!("{}{}{}{}", if active { "▸ " } else { "  " }, head, field.display(), tail));
         lines.push(Line::from(vec![
             Span::raw(if active { "▸ " } else { "  " }),
             Span::styled(head, label_style),
-            Span::raw(format!("{}{}", field.value, cursor)),
+            Span::styled(field.display(), value_style),
+            Span::styled(tail.to_string(), Style::default().add_modifier(Modifier::DIM)),
         ]));
     }
     // Live command preview: shows the exact command being built as you type, so
     // the wizard teaches the underlying tool instead of hiding it.
     if let Some(cmd) = p.command_preview() {
         lines.push(Line::raw(""));
+        texts.push(String::new());
+        texts.push(format!("  runs  {cmd}"));
         lines.push(Line::from(vec![
             Span::styled("  runs  ", Style::default().add_modifier(Modifier::DIM)),
             Span::styled(cmd, Style::default().fg(Color::Green)),
         ]));
     }
+    let hint = "  Enter next/submit   Ctrl-j/k · Ctrl-↑↓ · Tab move field · Esc cancel";
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "  Enter next/submit   Ctrl-j/k · Ctrl-↑↓ · Tab move field · Esc cancel",
-        Style::default().add_modifier(Modifier::DIM),
-    )));
+    lines.push(Line::from(Span::styled(hint, Style::default().add_modifier(Modifier::DIM))));
+    texts.push(String::new());
+    texts.push(hint.to_string());
 
-    // Size to content (+1 slack in case the command line wraps).
-    let height = (lines.len() as u16 + 3).min(area.height);
-    let rect = centered(area, 72, height);
+    // Size to the *wrapped* content: a sudo mount's preview is far wider than the
+    // box, and counting lines instead of rows pushed the hint out of the border.
+    let inner = (area.width * PROMPT_PCT / 100).saturating_sub(2) as usize;
+    let rows: usize = texts.iter().map(|t| wrapped_line_count(t, inner)).sum();
+    let height = ((rows + 2) as u16).min(area.height);
+    let rect = centered(area, PROMPT_PCT, height);
     f.render_widget(Clear, rect);
 
     let para = Paragraph::new(lines)
@@ -1238,7 +1528,7 @@ fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
-    let rect = centered(area, 76, 23);
+    let rect = centered(area, 76, 25);
     f.render_widget(Clear, rect);
     let dim = Style::default().add_modifier(Modifier::DIM);
     let lines = vec![
@@ -1261,6 +1551,8 @@ fn render_help(f: &mut Frame, area: Rect) {
         Line::raw(""),
         Line::raw("In a form  type to fill (h/j/k/l are text!)"),
         Line::raw("           Ctrl-j/k · Ctrl-↑↓ · Tab move between fields · Esc cancel"),
+        Line::raw("           on a ‹ choice › field h/l or ←/→ pick the answer"),
+        Line::raw("In a yes/no  y confirm · n or Esc cancel · ←/→ then Enter"),
         Line::raw(""),
         Line::from(Span::styled("press ? or Esc to close", dim)),
     ];
@@ -1606,6 +1898,48 @@ mod tests {
     }
 
     #[test]
+    fn confirm_buttons_are_not_cut_off() {
+        // The box has to be tall enough for the buttons; when it was sized without
+        // counting the borders they were clipped and the modal looked unanswerable.
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('d')));
+        let screen = render(&mut app);
+        assert!(screen.contains("Yes (y)"), "yes button missing from the modal");
+        assert!(screen.contains("No (n)"), "no button missing from the modal");
+    }
+
+    #[test]
+    fn confirm_starts_on_no_so_enter_cannot_fire_it() {
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('d')));
+        app.on_key(press(KeyCode::Enter)); // reflex Enter must not delete
+        assert!(app.confirm.is_none(), "Enter still closes the gate");
+        assert_eq!(app.hosts.len(), 1, "Enter on the default must not delete");
+    }
+
+    #[test]
+    fn confirm_arrows_move_between_the_buttons() {
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('d')));
+        assert!(!app.confirm.as_ref().unwrap().yes, "starts on No");
+        app.on_key(press(KeyCode::Left));
+        assert!(app.confirm.as_ref().unwrap().yes, "arrow selects Yes");
+        app.on_key(press(KeyCode::Char('l')));
+        assert!(!app.confirm.as_ref().unwrap().yes, "and back to No");
+    }
+
+    #[test]
+    fn confirm_ignores_stray_keys() {
+        // Anything unbound used to cancel, so brushing a key silently dropped the
+        // question - including the one offering the lazy-unmount fix.
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('d')));
+        app.on_key(press(KeyCode::Char('z')));
+        app.on_key(press(KeyCode::Down));
+        assert!(app.confirm.is_some(), "stray keys must leave the modal up");
+    }
+
+    #[test]
     fn y_picks_a_host_instead_of_typing_one() {
         let mut app = app_with_host();
         app.keys = vec![keys::Key {
@@ -1696,9 +2030,144 @@ mod tests {
     }
 
     #[test]
+    fn mount_point_expands_tilde() {
+        // sshfs is spawned without a shell, so `~/dir` has to be expanded here or
+        // both the mkdir and the mount land on a directory literally named `~`.
+        // This is the resolver `submit_prompt` itself calls; the run path beyond it
+        // (create_dir_all + spawn) needs sshfs installed and writes to $HOME, so it
+        // is not covered.
+        let home = dirs::home_dir().unwrap_or_default();
+        assert_eq!(mount_point("raspi", "~/exampledirectory"), home.join("exampledirectory").to_string_lossy());
+        assert_eq!(mount_point("raspi", "~"), home.to_string_lossy());
+        assert_eq!(mount_point("raspi", ""), "./sshfs/raspi");
+        assert_eq!(mount_point("raspi", "/mnt/raspi"), "/mnt/raspi");
+    }
+
+    /// A mount wizard with the rights choice already set.
+    fn mount_prompt(choice: usize) -> Prompt {
+        let mut p = Prompt::mount("crusader".into());
+        p.fields[2].choice = choice;
+        p
+    }
+
+    #[test]
+    fn mount_without_sudo_is_a_plain_sshfs() {
+        let spec = MountSpec::from_fields("crusader", &mount_prompt(0).fields);
+        assert_eq!(spec.argv(), vec!["sshfs", "crusader:", "./sshfs/crusader"]);
+    }
+
+    #[test]
+    fn mount_with_nopasswd_sudo_wraps_the_server() {
+        let spec = MountSpec::from_fields("crusader", &mount_prompt(1).fields);
+        assert_eq!(
+            spec.argv(),
+            vec![
+                "sshfs",
+                "-o",
+                "sftp_server=sudo /usr/lib/openssh/sftp-server",
+                "crusader:",
+                "./sshfs/crusader",
+            ]
+        );
+    }
+
+    #[test]
+    fn mount_never_offers_to_send_a_password() {
+        // Every way of feeding sudo a password from here leaks it into `ps` on
+        // both machines, so the mode does not exist: NOPASSWD or nothing.
+        let p = Prompt::mount("crusader".into());
+        let options = match &p.fields[2].kind {
+            Kind::Choice(o) => o.clone(),
+            _ => panic!("the rights field must be a choice"),
+        };
+        assert_eq!(options.len(), 2, "only plain and NOPASSWD");
+        assert!(!options.iter().any(|o| o.contains("password")));
+        assert!(p.fields.iter().all(|f| !f.label.to_lowercase().contains("password")));
+        for choice in 0..options.len() {
+            let argv = MountSpec::from_fields("crusader", &mount_prompt(choice).fields).argv();
+            assert!(!argv.iter().any(|a| a.contains("sudo -S")), "no password is ever piped to sudo");
+        }
+    }
+
+    #[test]
+    fn mount_refuses_a_comma_in_the_server_path() {
+        // sshfs splits -o values on commas, so the option would be misparsed.
+        let mut p = mount_prompt(1);
+        p.fields[3].value = "/usr/lib,openssh/sftp-server".into();
+        assert!(MountSpec::from_fields("crusader", &p.fields).problem().is_some());
+        assert!(MountSpec::from_fields("crusader", &mount_prompt(1).fields).problem().is_none());
+    }
+
+    #[test]
+    fn mount_hides_the_server_path_until_sudo_is_picked() {
+        let mut plain = mount_prompt(0);
+        assert!(!plain.visible(3), "a plain mount never needs the server path");
+        plain.idx = 2;
+        assert!(plain.on_last_field(), "so Enter on the rights field submits");
+        assert!(mount_prompt(1).visible(3), "NOPASSWD needs it");
+    }
+
+    #[test]
+    fn mount_rights_cycle_with_h_and_l() {
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('m')));
+        app.on_key(press(KeyCode::Tab));
+        app.on_key(press(KeyCode::Tab)); // onto the rights choice
+        assert_eq!(app.prompt.as_ref().unwrap().idx, 2);
+        app.on_key(press(KeyCode::Char('l')));
+        assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 1);
+        app.on_key(press(KeyCode::Char('h')));
+        assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 0);
+        app.on_key(press(KeyCode::Left)); // wraps back round
+        assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 1);
+        // h/l are the answer here, never typed text.
+        assert!(app.prompt.as_ref().unwrap().fields[2].value.is_empty());
+    }
+
+    #[test]
+    fn mount_tab_skips_the_hidden_fields() {
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('m')));
+        for _ in 0..2 {
+            app.on_key(press(KeyCode::Tab));
+        }
+        assert_eq!(app.prompt.as_ref().unwrap().idx, 2, "on the rights choice");
+        app.on_key(press(KeyCode::Tab)); // no sudo → wraps past the hidden field
+        assert_eq!(app.prompt.as_ref().unwrap().idx, 0);
+    }
+
+    #[test]
+    fn mount_wizard_survives_a_wrapping_preview() {
+        // The sudo preview is wider than the box. Sizing it by line count instead
+        // of wrapped rows pushed the key hints out through the border.
+        let mut app = app_with_host();
+        app.on_key(press(KeyCode::Char('m')));
+        app.prompt.as_mut().unwrap().fields[2].choice = 1;
+        let screen = render(&mut app);
+        assert!(screen.contains("sftp_server=sudo"), "the preview wraps to two rows");
+        assert!(screen.contains("Tab move field"), "hints clipped off the wizard");
+    }
+
+    #[test]
+    fn mount_preview_matches_what_runs() {
+        // The preview must resolve the mountpoint exactly like the run path, so it
+        // goes through the same `mount_point`.
+        let mut p = Prompt::mount("raspi".into());
+        let idx = p.fields.iter().position(|f| f.label.contains("mountpoint")).unwrap();
+        p.fields[idx].value = "~/exampledirectory".into();
+        assert_eq!(
+            p.command_preview().unwrap(),
+            format!("sshfs raspi: {}", mount_point("raspi", "~/exampledirectory"))
+        );
+    }
+
+    #[test]
     fn mounts_tab_renders() {
         let mut app = App::empty();
         app.view = View::Mounts;
         assert!(render(&mut app).contains("Mounts"));
     }
 }
+
+
+

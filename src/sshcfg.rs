@@ -54,6 +54,21 @@ pub fn ssh_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".ssh")
 }
 
+/// Expand a leading `~` to the home directory. The TUI spawns commands directly
+/// (no shell), so a typed `~/dir` would otherwise reach `sshfs`/`mkdir` literally
+/// and create a directory actually named `~`. Only bare `~` and `~/…` expand;
+/// `~user/…` needs a passwd lookup and is left as typed.
+pub fn expand_tilde(path: &str) -> PathBuf {
+    let home = || dirs::home_dir().unwrap_or_default();
+    match path {
+        "~" => home(),
+        _ => match path.strip_prefix("~/") {
+            Some(rest) => home().join(rest),
+            None => PathBuf::from(path),
+        },
+    }
+}
+
 /// The main config file we read from and append to.
 pub fn config_path() -> PathBuf {
     ssh_dir().join("config")
@@ -192,8 +207,8 @@ fn split_kv(line: &str) -> (&str, &str) {
 fn expand_include(value: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for token in value.split_whitespace() {
-        let expanded = if let Some(rest) = token.strip_prefix("~/") {
-            dirs::home_dir().unwrap_or_default().join(rest)
+        let expanded = if token == "~" || token.starts_with("~/") {
+            expand_tilde(token)
         } else {
             let p = Path::new(token);
             if p.is_absolute() { p.to_path_buf() } else { ssh_dir().join(p) }
@@ -493,6 +508,17 @@ fn harden(path: &Path, mode: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tilde_expands_only_for_the_current_user() {
+        let home = dirs::home_dir().unwrap_or_default();
+        assert_eq!(expand_tilde("~"), home);
+        assert_eq!(expand_tilde("~/exampledirectory"), home.join("exampledirectory"));
+        // Left alone: a passwd lookup is out of scope, and plain paths must not move.
+        assert_eq!(expand_tilde("~root/x"), PathBuf::from("~root/x"));
+        assert_eq!(expand_tilde("./sshfs/raspi"), PathBuf::from("./sshfs/raspi"));
+        assert_eq!(expand_tilde("/mnt/raspi"), PathBuf::from("/mnt/raspi"));
+    }
 
     /// Parse text into hosts without touching disk (no include following).
     fn parse_str(text: &str) -> Vec<Host> {
