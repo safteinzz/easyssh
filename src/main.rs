@@ -24,19 +24,39 @@ use clap::{Parser, Subcommand};
 
 /// Shown under `essh --help`. The command list can't convey the two things that
 /// aren't subcommands: bare `essh` opens the TUI, and any bare word connects.
-const AFTER: &str = "\
+const AFTER: &str = concat!(
+    "\
 Two more ways to run it (not subcommands):
   essh                 open the toolbox (TUI): hosts, keys, tunnels, mounts
   essh <host> [args]   connect (any unknown word is an ssh destination, e.g. `essh raspi -p 2222`)
 
 The toolbox is where keys, tunnels, mounts, and adding/editing hosts live.
-Run `essh <command> --help` for a command's details.";
+Run `essh <command> --help` for a command's details.",
+    "\n\nby ",
+    env!("CARGO_PKG_AUTHORS"),
+    "  ",
+    env!("CARGO_PKG_REPOSITORY"),
+);
+
+/// `-V` stays a bare version string for scripts; `--version` spells out who
+/// wrote it, under what license, and where it lives. Every field comes from
+/// Cargo.toml, so none of it can drift from the manifest.
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\n",
+    env!("CARGO_PKG_AUTHORS"),
+    "\n",
+    env!("CARGO_PKG_LICENSE"),
+    "  ",
+    env!("CARGO_PKG_REPOSITORY"),
+);
 
 #[derive(Parser)]
 #[command(
     name = "easyssh",
     bin_name = "essh",
     version,
+    long_version = LONG_VERSION,
     about,
     after_help = AFTER
 )]
