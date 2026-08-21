@@ -1,17 +1,25 @@
 <!--
-AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating picture for this repo. Optimize for completeness and precision for the agent, not for human readability. Humans read README.md instead. Do not remove detail to make this nicer — err toward more explicit, not less. FORMAT: machine-read, not a formatted human doc. Do NOT hard-wrap lines to a column width for readability; put each rule/point on ONE line, however long.
+AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating picture for this repo. Optimize for completeness and precision for the agent, not for human readability. Humans read README.md instead. Do not remove detail to make this nicer, err toward more explicit, not less. FORMAT: machine-read, not a formatted human doc. Do NOT hard-wrap lines to a column width for readability; put each rule/point on ONE line, however long.
 -->
 # AGENTS.md
 
-Working brief for an AI coding agent, not documentation for people (README covers that). Rules, invariants and gotchas needed to change this project correctly without rediscovering them.
+Working brief for an AI coding agent, not documentation for people (the README covers that): the rules, invariants and gotchas needed to change this project correctly without rediscovering them.
 
 ## Hard rules
-- Commit only when the user says ship. Commits go in once the changes are tested, which is normally right when they are about to ship, never as a mid-work checkpoint.
-- Release order, exactly: `cargo clippy` clean and `cargo test` green, bump `version` in Cargo.toml, `cargo build` so Cargo.lock's version matches, one commit, `git push origin main`, `cargo publish` (dry-run first, publishing is irreversible), then tag only after publish succeeds with `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`. A tag must never point at a version that failed to publish. `cargo publish` fails on a dirty Cargo.lock, which is why the rebuild precedes the commit.
-- `main` is protected: no force-push and no history rewrite, so fix mistakes with a forward commit.
-- No em-dashes anywhere (code, comments, README, --help, crate description, commit messages); they read as AI-generated. Use `-`.
-- Fix the root cause. If a workaround must ship, say the word "workaround" out loud. Never silence a lint with `#[allow]`; fix or delete the code it points at.
-- Every bug fix gets a test, because throwaway manual checks let regressions back in. If something genuinely cannot be tested (terminal lifecycle state, for example), say so instead of skipping it silently.
+- Commit, push, and publish only when the user says to ship; a mid-work commit is never the deliverable, because the user tests interactively first.
+- Commit messages are short single-line conventional ones (`feat:`, `fix:`, `chore:`, ...), never with a `Co-Authored-By` trailer and never with a verbose body.
+- Release flow, in this exact order: write the regression tests for what is about to ship -> bump `version` in `Cargo.toml` -> `cargo clippy-all` clean and `cargo test` green, which is also what refreshes `Cargo.lock` with the new version -> one commit -> `git push origin main` -> `cargo publish` (dry-run first, publishing is irreversible) -> tag only after publish succeeds with `git tag vX.Y.Z && git push origin --tags`; a tag must never point at a version that failed to publish, and the bump comes first because `cargo publish` fails on a `Cargo.lock` that still holds the old version.
+- Tests are written at ship time and only then: covering the behaviour that just settled is the first step of the release flow, so the suite grows once per release instead of once per commit.
+- Never write a test for behaviour that has not shipped yet, because code that is not in the last release tag is still being designed, and a test pinning a shape that is about to change is how a suite starts lying.
+- A test may only assert something the README or `--help` promises, or a pure-logic invariant (parsing, generation, path resolution, validation); never the shape of a private function and never the specific diff that was just made, since those rot on the next refactor and teach nothing about whether the program works.
+- Removing a promise from the README removes its tests in the same commit.
+- A test may only write inside a temp directory it deletes, never a real config, data, cache or content directory and never a fixed path, so a machine is left exactly as it was before the suite ran.
+- Never drive the interface to test it: build it, say what changed and what to look at, and let the user run it, because they see the screen instantly while an agent driving a pty or a tmux pane is slow and wrong about what it looks like; logic that is not visual can still be checked directly from `tests/`.
+- Never `cargo install` to test: run the release binary at `./target/release/essh` directly, because installing replaces the binary on PATH with a work-in-progress build; install only when the user asks.
+- `main` is protected: no force-push and no history rewrite, so a mistake is fixed with a forward commit.
+- No em-dashes anywhere (code, comments, README, `--help`, crate description, commit messages, prose), because they read as AI-generated text; use `-` instead.
+- Fix the root cause, and if a workaround must ship say the word "workaround" out loud so a silent patch never passes as a real fix; the same goes for lints, where an `#[allow]` is never the answer and the code it points at gets fixed or deleted.
+- `TODO-LIST.md` (gitignored) holds one-line ideas, and the line is deleted when the idea ships.
 - Tests never touch the real `~/.ssh`: use `App::empty()` and the `sshcfg` `*_in(path, ...)` helpers, which keep everything on temp files and in-memory data.
 - Do not grow the CLI. It holds connect, `ls`, `cp` and `update` only, all things faster to type than to click. Anything a user would have to look up belongs in the TUI, which is the whole point of the tool.
 
@@ -40,11 +48,11 @@ Working brief for an AI coding agent, not documentation for people (README cover
 - When suspending the TUI: call `show_cursor()` after leaving the alt-screen, because the draw loop hides the cursor and leaving the alt-screen does not restore it, so the child would otherwise run with an invisible cursor.
 - When testing the TUI: driving it through `script` or a pty is unreliable because the alt-screen is not captured, so assert rendering with ratatui's `TestBackend` instead.
 
-## Build / test
-- `cargo build` and `cargo build --release`, binary at `target/release/essh`.
-- `cargo clippy`, kept warning-clean.
-- `cargo test`, covering `sshcfg` parser and block-surgery tests on temp files plus `TestBackend` render and keymap tests in `tui.rs`.
-- `cargo install --path .` installs the `essh` command.
+## Build / lint / test
+- `cargo build --release`, binary at `target/release/essh`.
+- `cargo clippy-all` is the lint pass, aliased in `.cargo/config.toml` to `clippy --release --all-targets -- -D warnings`; use it rather than a bare `cargo clippy`, which skips `tests/` and `examples/` and only warns where the release flow wants a failure.
+- `cargo test`.
+- Tests cover the `sshcfg` parser and its block surgery on temp files, plus `TestBackend` render and keymap tests in `tui.rs`; when something genuinely cannot be tested (terminal lifecycle state, for example), say so rather than skipping it silently.
 
 ## Overview
 `easyssh` is a Rust CLI and TUI that makes ssh simple: one binary `essh` in place of `ssh`, `ssh-keygen`, `ssh-copy-id`, `scp` and `sshfs`, plus hand-editing `~/.ssh/config`. It is a smart frontend rather than a reimplementation, so every action shells out to the real tools and ssh-agent, keys and existing config keep working. Bare `essh` opens a ratatui toolbox with Hosts, Keys, Tunnels and Mounts tabs and their wizards, while the CLI keeps connect, `ls`, `cp` and `update`. Crate `easyssh`, binary `essh`, repo `git@gitlab.com:safteinzz/easyssh.git`, published on crates.io under AGPL-3.0-only.

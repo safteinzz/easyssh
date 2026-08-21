@@ -1,7 +1,9 @@
 /target
+TODO-LIST.md
+
+# Tool-specific agent pointers (thin @AGENTS.md imports, never committed)
 CLAUDE.md
 GEMINI.md
 .cursor/
 .aider*
 .windsurfrules
-TODO-LIST.md

@@ -2,12 +2,16 @@
 name = "easyssh"
 version = "0.2.10"
 edition = "2024"
+rust-version = "1.88"
 description = "stop typing flags, make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI"
 authors = ["Pablo Antonio Hernández Hernández (safteinzz)"]
 license = "AGPL-3.0-only"
+readme = "README.md"
 repository = "https://gitlab.com/safteinzz/easyssh"
+keywords = ["ssh", "sshfs", "tui", "cli", "sysadmin"]
+categories = ["command-line-utilities", "network-programming"]
 # README screenshots are fetched over the network by crates.io via absolute raw
-# URLs, never read from the package, so keep them out of the published tarball.
+# URLs, never read out of the package, so shipping them would only bloat every download.
 exclude = ["readme-assets/"]
 
 # The crate is `easyssh`, but the command you type is the shorter `essh`
