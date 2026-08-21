@@ -47,7 +47,8 @@ essh                 # open the toolbox (TUI)
 essh <host> [args]   # connect - any unknown word is an ssh destination
 essh ls [-v]         # list hosts from ~/.ssh/config
 essh cp <src> <dst>  # scp with alias:path shorthand and auto -r for dirs
-essh update          # update to the latest release on crates.io
+essh self update     # reinstall the latest release from crates.io
+essh self check      # is there a newer release?
 ```
 
 ## In the toolbox

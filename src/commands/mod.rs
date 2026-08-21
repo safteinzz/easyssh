@@ -6,4 +6,4 @@
 pub mod connect;
 pub mod cp;
 pub mod ls;
-pub mod update;
+pub mod selfcmd;
