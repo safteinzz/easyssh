@@ -6,7 +6,7 @@
 //! up first and only ever append - your hand edits, comments and ordering are
 //! never rewritten.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -197,7 +197,10 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
 fn split_kv(line: &str) -> (&str, &str) {
     let sep = line.find(|c: char| c.is_whitespace() || c == '=');
     match sep {
-        Some(i) => (line[..i].trim_end_matches('='), line[i + 1..].trim_start_matches(['=', ' ', '\t'])),
+        Some(i) => (
+            line[..i].trim_end_matches('='),
+            line[i + 1..].trim_start_matches(['=', ' ', '\t']),
+        ),
         None => (line, ""),
     }
 }
@@ -211,7 +214,11 @@ fn expand_include(value: &str) -> Vec<PathBuf> {
             expand_tilde(token)
         } else {
             let p = Path::new(token);
-            if p.is_absolute() { p.to_path_buf() } else { ssh_dir().join(p) }
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                ssh_dir().join(p)
+            }
         };
 
         match expanded.file_name().and_then(|n| n.to_str()) {
@@ -239,7 +246,9 @@ fn expand_include(value: &str) -> Vec<PathBuf> {
 fn glob_match(pattern: &str, name: &str) -> bool {
     match pattern.split_once('*') {
         None => pattern == name,
-        Some((pre, suf)) => name.starts_with(pre) && name.ends_with(suf) && name.len() >= pre.len() + suf.len(),
+        Some((pre, suf)) => {
+            name.starts_with(pre) && name.ends_with(suf) && name.len() >= pre.len() + suf.len()
+        }
     }
 }
 
@@ -370,7 +379,10 @@ fn update_host_in(cfg: &Path, original: &str, h: &NewHost) -> Result<()> {
     let lines: Vec<&str> = text.lines().collect();
     match sole_block_range(&lines, original) {
         BlockFind::None => bail!("no host '{original}' in {}", cfg.display()),
-        BlockFind::Shared => bail!("'{original}' shares a Host block with other aliases - edit {} by hand", cfg.display()),
+        BlockFind::Shared => bail!(
+            "'{original}' shares a Host block with other aliases - edit {} by hand",
+            cfg.display()
+        ),
         BlockFind::Range(s, e) => {
             backup(cfg)?;
             let mut out: Vec<String> = lines[..s].iter().map(|l| l.to_string()).collect();
@@ -386,14 +398,21 @@ fn delete_host_in(cfg: &Path, alias: &str) -> Result<()> {
     let lines: Vec<&str> = text.lines().collect();
     match sole_block_range(&lines, alias) {
         BlockFind::None => bail!("no host '{alias}' in {}", cfg.display()),
-        BlockFind::Shared => bail!("'{alias}' shares a Host block with other aliases - edit {} by hand", cfg.display()),
+        BlockFind::Shared => bail!(
+            "'{alias}' shares a Host block with other aliases - edit {} by hand",
+            cfg.display()
+        ),
         BlockFind::Range(mut s, e) => {
             // Also drop the blank separator line just above the block, if any.
             if s > 0 && lines[s - 1].trim().is_empty() {
                 s -= 1;
             }
             backup(cfg)?;
-            let out: Vec<String> = lines[..s].iter().chain(lines[e..].iter()).map(|l| l.to_string()).collect();
+            let out: Vec<String> = lines[..s]
+                .iter()
+                .chain(lines[e..].iter())
+                .map(|l| l.to_string())
+                .collect();
             write_lines(cfg, &out)
         }
     }
@@ -489,7 +508,10 @@ fn sole_block_range(lines: &[&str], alias: &str) -> BlockFind {
 
 /// `config` → `config.bak.<epoch>` so repeated adds don't clobber one backup.
 fn backup_path(cfg: &Path) -> PathBuf {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     cfg.with_extension(format!("bak.{secs}"))
 }
 
@@ -513,10 +535,16 @@ mod tests {
     fn tilde_expands_only_for_the_current_user() {
         let home = dirs::home_dir().unwrap_or_default();
         assert_eq!(expand_tilde("~"), home);
-        assert_eq!(expand_tilde("~/exampledirectory"), home.join("exampledirectory"));
+        assert_eq!(
+            expand_tilde("~/exampledirectory"),
+            home.join("exampledirectory")
+        );
         // Left alone: a passwd lookup is out of scope, and plain paths must not move.
         assert_eq!(expand_tilde("~root/x"), PathBuf::from("~root/x"));
-        assert_eq!(expand_tilde("./sshfs/raspi"), PathBuf::from("./sshfs/raspi"));
+        assert_eq!(
+            expand_tilde("./sshfs/raspi"),
+            PathBuf::from("./sshfs/raspi")
+        );
         assert_eq!(expand_tilde("/mnt/raspi"), PathBuf::from("/mnt/raspi"));
     }
 
@@ -529,8 +557,12 @@ mod tests {
 
     /// A throwaway config file under the temp dir, uniquely named per test.
     fn temp_cfg(body: &str) -> PathBuf {
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("easyssh-test-{}-{stamp}.cfg", std::process::id()));
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("easyssh-test-{}-{stamp}.cfg", std::process::id()));
         fs::write(&path, body).unwrap();
         path
     }
@@ -620,7 +652,8 @@ Host alpha beta
     fn add_with_key_joins_existing_shared_block() {
         // A shared block already points id_fleet at 2 hosts; adding a third host
         // with that key appends it to the group, not a duplicate key line.
-        let cfg = temp_cfg("Host alpha beta\n    IdentityFile ~/.ssh/id_fleet\n    IdentitiesOnly yes\n");
+        let cfg =
+            temp_cfg("Host alpha beta\n    IdentityFile ~/.ssh/id_fleet\n    IdentitiesOnly yes\n");
         let nh = NewHost {
             alias: "gamma".into(),
             hostname: "10.0.0.3".into(),
@@ -630,10 +663,20 @@ Host alpha beta
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
-        assert!(text.contains("Host alpha beta gamma"), "alias joined the group line");
-        assert_eq!(text.matches("IdentityFile ~/.ssh/id_fleet").count(), 1, "no duplicate key line");
+        assert!(
+            text.contains("Host alpha beta gamma"),
+            "alias joined the group line"
+        );
+        assert_eq!(
+            text.matches("IdentityFile ~/.ssh/id_fleet").count(),
+            1,
+            "no duplicate key line"
+        );
         // ssh (and our merge) still resolve gamma's key from the group.
-        let gamma = merge_hosts(parse_str(&text)).into_iter().find(|h| h.alias == "gamma").unwrap();
+        let gamma = merge_hosts(parse_str(&text))
+            .into_iter()
+            .find(|h| h.alias == "gamma")
+            .unwrap();
         assert_eq!(gamma.identity.as_deref(), Some("~/.ssh/id_fleet"));
         assert_eq!(gamma.hostname.as_deref(), Some("10.0.0.3"));
         fs::remove_file(&cfg).ok();
@@ -653,8 +696,15 @@ Host alpha beta
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
-        assert!(!text.contains("Host solo gamma"), "must not join a one-alias block");
-        assert_eq!(text.matches("IdentityFile ~/.ssh/id_fleet").count(), 2, "gamma got its own key line");
+        assert!(
+            !text.contains("Host solo gamma"),
+            "must not join a one-alias block"
+        );
+        assert_eq!(
+            text.matches("IdentityFile ~/.ssh/id_fleet").count(),
+            2,
+            "gamma got its own key line"
+        );
         fs::remove_file(&cfg).ok();
     }
 
@@ -688,8 +738,19 @@ Host alpha beta
         };
         update_host_in(&cfg, "a", &nh).unwrap();
         let hosts = parse_str(&fs::read_to_string(&cfg).unwrap());
-        assert_eq!(hosts.iter().find(|h| h.alias == "a").unwrap().hostname.as_deref(), Some("new"));
-        assert!(hosts.iter().any(|h| h.alias == "b"), "sibling block must survive");
+        assert_eq!(
+            hosts
+                .iter()
+                .find(|h| h.alias == "a")
+                .unwrap()
+                .hostname
+                .as_deref(),
+            Some("new")
+        );
+        assert!(
+            hosts.iter().any(|h| h.alias == "b"),
+            "sibling block must survive"
+        );
         fs::remove_file(&cfg).ok();
     }
 }

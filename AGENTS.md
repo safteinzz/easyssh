@@ -53,9 +53,16 @@ Working brief for an AI coding agent, not documentation for people (the README c
 - `cargo clippy-all` is the lint pass, aliased in `.cargo/config.toml` to `clippy --release --all-targets -- -D warnings`; use it rather than a bare `cargo clippy`, which skips `tests/` and `examples/` and only warns where the release flow wants a failure.
 - `cargo test`.
 - `cargo +1.88 msrv` checks the crate against the `rust-version` floor it advertises (alias in `.cargo/config.toml`), and when the code starts needing a newer compiler both that floor and the toolchain in this line move together.
-- Tests cover the `sshcfg` parser and its block surgery on temp files, plus `TestBackend` render and keymap tests in `tui.rs`; when something genuinely cannot be tested (terminal lifecycle state, for example), say so rather than skipping it silently.
+- Tests cover the `sshcfg` parser and its block surgery on temp files, plus `TestBackend` render and keymap tests in `tui/tests.rs`; when something genuinely cannot be tested (terminal lifecycle state, for example), say so rather than skipping it silently.
 
 ## Overview
+Layout:
+- `src/main.rs` - the clap `Cmd` enum and the dispatch match, nothing else.
+- `src/commands/<verb>.rs` - one file per CLI command (`connect`, `ls`, `cp`, `selfcmd`), each exposing `run`.
+- `src/tui/` - the toolbox: `mod.rs` owns `App`, the event loop and the terminal handling, `input.rs` dispatches keys per view, `wizard.rs` is what a submitted prompt does, `prompt.rs` the field machinery, `picker.rs` and `confirm.rs` their overlays, `mount_spec.rs` the sshfs command a mount wizard builds, `render.rs` the frame, `widgets.rs` the domain-blind furniture, `connect.rs` reading ssh's failure output, `tests.rs` the `TestBackend` tests.
+- Domain modules at the top level: `sshcfg` (parsing and editing `~/.ssh/config`), `keys`, `tunnels`, `mounts`.
+
+
 `easyssh` is a Rust CLI and TUI that makes ssh simple: one binary `essh` in place of `ssh`, `ssh-keygen`, `ssh-copy-id`, `scp` and `sshfs`, plus hand-editing `~/.ssh/config`. It is a smart frontend rather than a reimplementation, so every action shells out to the real tools and ssh-agent, keys and existing config keep working. Bare `essh` opens a ratatui toolbox with Hosts, Keys, Tunnels and Mounts tabs and their wizards, while the CLI keeps connect, `ls`, `cp` and `update`. Crate `easyssh`, binary `essh`, repo `git@gitlab.com:safteinzz/easyssh.git`, published on crates.io under AGPL-3.0-only.
 
 ## Self-repair

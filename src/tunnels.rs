@@ -7,7 +7,7 @@
 //! beat to confirm it actually stayed up - so a bad port or auth failure surfaces
 //! as an error instead of a "tunnel" that was already dead on arrival.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -29,8 +29,15 @@ pub struct Tunnel {
 impl Tunnel {
     /// One-line human summary for the listing / TUI.
     pub fn describe(&self) -> String {
-        let arrow = if self.kind == 'L' { "local →" } else { "remote ←" };
-        format!("pid {:>7}  -{} {}  {} ({} {})", self.pid, self.kind, self.spec, self.host, arrow, self.host)
+        let arrow = if self.kind == 'L' {
+            "local →"
+        } else {
+            "remote ←"
+        };
+        format!(
+            "pid {:>7}  -{} {}  {} ({} {})",
+            self.pid, self.kind, self.spec, self.host, arrow, self.host
+        )
     }
 
     /// A tunnel is alive while its PID still has a `/proc` entry (Linux).
@@ -56,7 +63,10 @@ fn state_path() -> PathBuf {
 }
 
 fn log_path() -> PathBuf {
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     state_dir().join("tunnels").join(format!("{stamp}.log"))
 }
 
@@ -70,10 +80,14 @@ pub fn list() -> Vec<Tunnel> {
     let mut live = Vec::new();
     for line in text.lines() {
         let mut f = line.split('\t');
-        let (Some(pid), Some(kind), Some(spec), Some(host)) = (f.next(), f.next(), f.next(), f.next()) else {
+        let (Some(pid), Some(kind), Some(spec), Some(host)) =
+            (f.next(), f.next(), f.next(), f.next())
+        else {
             continue;
         };
-        let Ok(pid) = pid.parse::<u32>() else { continue };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
         // `log` is optional so a state file from an older build still parses.
         let log = f.next().map(PathBuf::from).unwrap_or_default();
         let t = Tunnel {
@@ -102,7 +116,16 @@ fn save(tunnels: &[Tunnel]) -> Result<()> {
     }
     let body: String = tunnels
         .iter()
-        .map(|t| format!("{}\t{}\t{}\t{}\t{}\n", t.pid, t.kind, t.spec, t.host, t.log.display()))
+        .map(|t| {
+            format!(
+                "{}\t{}\t{}\t{}\t{}\n",
+                t.pid,
+                t.kind,
+                t.spec,
+                t.host,
+                t.log.display()
+            )
+        })
         .collect();
     fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
@@ -145,7 +168,11 @@ pub fn open(kind: char, spec: &str, host: &str) -> Result<Tunnel> {
     if !proc_alive(pid) {
         let reason = fs::read_to_string(&log).unwrap_or_default();
         let _ = fs::remove_file(&log);
-        let first = reason.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("ssh exited immediately");
+        let first = reason
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("ssh exited immediately");
         bail!("{first}");
     }
 

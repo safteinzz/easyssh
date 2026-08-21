@@ -28,13 +28,16 @@ pub fn run(args: Args) {
         {
             eprintln!(
                 "{}",
-                format!("essh: '{alias}' isn't in your ~/.ssh/config - passing it to scp as-is.").yellow()
+                format!("essh: '{alias}' isn't in your ~/.ssh/config - passing it to scp as-is.")
+                    .yellow()
             );
         }
     }
 
     // Auto-recursive if any *local* source is a directory.
-    let recursive = srcs.iter().any(|s| remote_alias(s).is_none() && Path::new(s).is_dir());
+    let recursive = srcs
+        .iter()
+        .any(|s| remote_alias(s).is_none() && Path::new(s).is_dir());
 
     let mut cmd = std::process::Command::new("scp");
     if recursive {

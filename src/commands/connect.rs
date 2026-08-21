@@ -7,7 +7,10 @@ use colored::Colorize;
 
 pub fn run(args: Vec<String>) {
     if args.is_empty() {
-        eprintln!("{}", "essh: no host given. Try `essh ls` or just `essh`.".red());
+        eprintln!(
+            "{}",
+            "essh: no host given. Try `essh ls` or just `essh`.".red()
+        );
         std::process::exit(2);
     }
 

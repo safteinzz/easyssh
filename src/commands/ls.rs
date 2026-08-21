@@ -32,7 +32,12 @@ pub fn run(args: Args) {
                 Some(i) => format!("  ({i})"),
                 None => String::new(),
             };
-            println!("  {:width$}  {}{}", h.alias.bold(), h.target().dimmed(), key.dimmed());
+            println!(
+                "  {:width$}  {}{}",
+                h.alias.bold(),
+                h.target().dimmed(),
+                key.dimmed()
+            );
         }
     } else {
         for h in &hosts {

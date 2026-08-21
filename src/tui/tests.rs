@@ -1,0 +1,530 @@
+//! The TUI's render and keymap tests, driven through ratatui's `TestBackend`.
+
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use super::mount_spec::{MountSpec, mount_point};
+use super::picker::{Picker, PickerAction};
+use super::prompt::{Action, Kind};
+use super::*;
+
+/// Render each view + a wizard against a headless backend and dump the
+/// buffer to a string, so we can assert the layout draws real content
+/// without needing an actual terminal.
+fn render(app: &mut App) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| ui(f, app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    buf.content().iter().map(|c| c.symbol()).collect()
+}
+
+#[test]
+fn renders_chrome_and_wizards() {
+    let mut app = App::empty();
+
+    // Tab chrome is always present.
+    let hosts = render(&mut app);
+    assert!(hosts.contains("easyssh"), "title bar missing");
+    assert!(
+        hosts.contains("Hosts") && hosts.contains("Mounts"),
+        "tabs missing"
+    );
+
+    // The add-host wizard overlays its fields.
+    app.prompt = Some(Prompt::add_host());
+    let add = render(&mut app);
+    assert!(add.contains("Add host"), "add-host title missing");
+    assert!(add.contains("Alias"), "alias field missing");
+    app.prompt = None;
+
+    // The forward wizard builds off a host name.
+    app.prompt = Some(Prompt::forward("box".into()));
+    let fwd = render(&mut app);
+    assert!(fwd.contains("Remote port"), "forward field missing");
+
+    // Switching to the Tunnels view renders its (possibly empty) body.
+    app.view = View::Tunnels;
+    app.prompt = None;
+    let tun = render(&mut app);
+    assert!(tun.contains("Tunnels"), "tunnels view missing");
+}
+
+#[test]
+fn tab_cycles_views() {
+    let mut app = App::empty();
+    assert!(matches!(app.view, View::Hosts));
+    app.cycle_view(1);
+    assert!(matches!(app.view, View::Keys));
+    app.cycle_view(-1);
+    assert!(matches!(app.view, View::Hosts));
+}
+
+fn press(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+fn ctrl(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::CONTROL)
+}
+
+#[test]
+fn vim_keys_switch_views() {
+    let mut app = App::empty();
+    app.on_key(press(KeyCode::Char('l'))); // → next view
+    assert!(matches!(app.view, View::Keys));
+    app.on_key(press(KeyCode::Char('h'))); // ← prev view
+    assert!(matches!(app.view, View::Hosts));
+}
+
+#[test]
+fn c_creates_in_every_view() {
+    let mut app = App::empty();
+    // Hosts: `c` opens the add-host wizard.
+    app.on_key(press(KeyCode::Char('c')));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.action),
+        Some(Action::AddHost)
+    ));
+    app.prompt = None;
+
+    // Keys: the same `c` starts the new-key flow, asking the type first.
+    app.view = View::Keys;
+    app.on_key(press(KeyCode::Char('c')));
+    assert!(matches!(
+        app.picker.as_ref().map(|p| &p.action),
+        Some(PickerAction::NewKeyType)
+    ));
+
+    // Picking the first entry (ed25519) opens the name/comment wizard.
+    app.on_key(press(KeyCode::Enter));
+    match app.prompt.as_ref().map(|p| &p.action) {
+        Some(Action::NewKey { kind }) => assert_eq!(kind, "ed25519"),
+        _ => panic!("expected the new-key wizard"),
+    }
+}
+
+#[test]
+fn new_key_still_offers_rsa_for_old_servers() {
+    let mut app = App::empty();
+    app.view = View::Keys;
+    app.on_key(press(KeyCode::Char('c')));
+    app.on_key(press(KeyCode::Char('j'))); // down to the rsa entry
+    app.on_key(press(KeyCode::Enter));
+
+    match app.prompt.as_ref().map(|p| &p.action) {
+        Some(Action::NewKey { kind }) => assert_eq!(kind, "rsa"),
+        _ => panic!("expected the rsa wizard"),
+    }
+    // The suggested filename follows the chosen type.
+    assert_eq!(app.prompt.as_ref().unwrap().fields[0].default, "id_rsa");
+}
+
+#[test]
+fn form_typing_vs_field_nav() {
+    let mut app = App::empty();
+    app.prompt = Some(Prompt::add_host()); // 5 fields, idx 0
+
+    // Plain h/j/k/l are literal text in a form.
+    for c in ['h', 'j', 'k', 'l'] {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    assert_eq!(app.prompt.as_ref().unwrap().fields[0].value, "hjkl");
+    assert_eq!(
+        app.prompt.as_ref().unwrap().idx,
+        0,
+        "typing must not move fields"
+    );
+
+    // Ctrl-j / Ctrl-k move between fields.
+    app.on_key(ctrl(KeyCode::Char('j')));
+    assert_eq!(app.prompt.as_ref().unwrap().idx, 1);
+    app.on_key(ctrl(KeyCode::Char('j')));
+    assert_eq!(app.prompt.as_ref().unwrap().idx, 2);
+    app.on_key(ctrl(KeyCode::Char('k')));
+    assert_eq!(app.prompt.as_ref().unwrap().idx, 1);
+
+    // Ctrl-c bails out of the wizard.
+    app.on_key(ctrl(KeyCode::Char('c')));
+    assert!(app.prompt.is_none());
+}
+
+/// An app with one selected host, built without touching disk.
+fn app_with_host() -> App {
+    let mut app = App::empty();
+    app.hosts = vec![Host {
+        alias: "raspi".into(),
+        hostname: Some("10.0.0.1".into()),
+        user: Some("pi".into()),
+        port: None,
+        identity: None,
+    }];
+    app.host_state.select(Some(0));
+    app
+}
+
+#[test]
+fn e_opens_edit_prefilled() {
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('e')));
+    let p = app.prompt.as_ref().expect("edit wizard should open");
+    assert!(matches!(p.action, Action::EditHost { .. }));
+    assert_eq!(p.fields[0].value, "raspi", "alias pre-filled");
+    assert_eq!(p.fields[1].value, "10.0.0.1", "hostname pre-filled");
+}
+
+#[test]
+fn d_gates_delete_behind_confirm() {
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('d')));
+    assert!(app.confirm.is_some(), "delete must ask first");
+    app.on_key(press(KeyCode::Char('n'))); // decline
+    assert!(app.confirm.is_none(), "declining clears the gate");
+    // The host is still there (we never confirmed).
+    assert_eq!(app.hosts.len(), 1);
+}
+
+#[test]
+fn confirm_buttons_are_not_cut_off() {
+    // The box has to be tall enough for the buttons; when it was sized without
+    // counting the borders they were clipped and the modal looked unanswerable.
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('d')));
+    let screen = render(&mut app);
+    assert!(
+        screen.contains("Yes (y)"),
+        "yes button missing from the modal"
+    );
+    assert!(
+        screen.contains("No (n)"),
+        "no button missing from the modal"
+    );
+}
+
+#[test]
+fn confirm_starts_on_no_so_enter_cannot_fire_it() {
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('d')));
+    app.on_key(press(KeyCode::Enter)); // reflex Enter must not delete
+    assert!(app.confirm.is_none(), "Enter still closes the gate");
+    assert_eq!(app.hosts.len(), 1, "Enter on the default must not delete");
+}
+
+#[test]
+fn confirm_arrows_move_between_the_buttons() {
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('d')));
+    assert!(!app.confirm.as_ref().unwrap().yes, "starts on No");
+    app.on_key(press(KeyCode::Left));
+    assert!(app.confirm.as_ref().unwrap().yes, "arrow selects Yes");
+    app.on_key(press(KeyCode::Char('l')));
+    assert!(!app.confirm.as_ref().unwrap().yes, "and back to No");
+}
+
+#[test]
+fn confirm_ignores_stray_keys() {
+    // Anything unbound used to cancel, so brushing a key silently dropped the
+    // question - including the one offering the lazy-unmount fix.
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('d')));
+    app.on_key(press(KeyCode::Char('z')));
+    app.on_key(press(KeyCode::Down));
+    assert!(app.confirm.is_some(), "stray keys must leave the modal up");
+}
+
+#[test]
+fn y_picks_a_host_instead_of_typing_one() {
+    let mut app = app_with_host();
+    app.keys = vec![keys::Key {
+        path: "/home/u/.ssh/id_ed25519".into(),
+        kind: "ED25519".into(),
+        comment: String::new(),
+        fingerprint: String::new(),
+    }];
+    app.key_state.select(Some(0));
+    app.view = View::Keys;
+
+    // `y` = yank/copy (vim); `c` is create here, not copy, since vim's `c` is "change".
+    app.on_key(press(KeyCode::Char('y')));
+    let p = app.picker.as_ref().expect("host picker should open");
+    assert_eq!(
+        p.items,
+        vec!["raspi".to_string()],
+        "picker lists the config hosts"
+    );
+    assert!(
+        app.prompt.is_none(),
+        "must not make the user type an alias we already know"
+    );
+}
+
+#[test]
+fn n_is_not_a_create_key() {
+    // Create is `c` (tmux); `n` was dropped, so it must do nothing.
+    let mut app = App::empty();
+    app.on_key(press(KeyCode::Char('n')));
+    assert!(app.prompt.is_none(), "`n` must not create anything");
+}
+
+#[test]
+fn help_overlay_is_not_cut_off() {
+    let mut app = App::empty();
+    app.show_help = true;
+    let out = render(&mut app);
+    // First and last lines both present means the box is tall enough.
+    assert!(out.contains("Move"), "help header missing");
+    assert!(
+        out.contains("ssh-copy-id"),
+        "help should teach the real command"
+    );
+    assert!(
+        out.contains("press ? or Esc to close"),
+        "help overlay is taller than its box"
+    );
+}
+
+#[test]
+fn status_expires_after_its_ttl() {
+    let mut app = App::empty();
+    app.set_status("connected");
+    assert_eq!(app.live_status(), Some("connected"));
+
+    // Backdate it past the TTL: a stale message must stop showing.
+    app.status_at = Instant::now().checked_sub(STATUS_TTL * 2);
+    assert!(app.live_status().is_none());
+}
+
+#[test]
+fn keygen_command_preview_tracks_fields() {
+    let mut p = Prompt::new_key("ed25519");
+    p.fields[0].value = "work".into();
+    p.fields[1].value = "me@x".into();
+    assert_eq!(
+        p.command_preview().unwrap(),
+        "ssh-keygen -t ed25519 -f ~/.ssh/work -C me@x"
+    );
+
+    // RSA always gets -b 4096; a blank name falls back to id_<kind>.
+    let rsa = Prompt::new_key("rsa");
+    assert_eq!(
+        rsa.command_preview().unwrap(),
+        "ssh-keygen -t rsa -f ~/.ssh/id_rsa -b 4096"
+    );
+
+    // Config-writing wizards have no single command to preview.
+    assert!(Prompt::add_host().command_preview().is_none());
+}
+
+#[test]
+fn picker_fills_identityfile_field() {
+    // A key chosen from the picker lands in the wizard's IdentityFile field,
+    // so the user never has to type the path.
+    let mut app = App::empty();
+    app.prompt = Some(Prompt::add_host());
+    let idx = app
+        .prompt
+        .as_ref()
+        .unwrap()
+        .fields
+        .iter()
+        .position(|f| f.label.contains("IdentityFile"))
+        .unwrap();
+    app.picker = Some(Picker {
+        title: "pick".into(),
+        items: vec!["~/.ssh/id_ed25519".into()],
+        idx: 0,
+        action: PickerAction::FillField { field: idx },
+    });
+    app.on_key(press(KeyCode::Enter));
+    assert!(app.picker.is_none());
+    assert_eq!(
+        app.prompt.as_ref().unwrap().fields[idx].value,
+        "~/.ssh/id_ed25519"
+    );
+}
+
+#[test]
+fn mount_defaults_under_sshfs_dir() {
+    // Mountpoints group under ./sshfs/<host> so leftovers do not clutter home.
+    let p = Prompt::mount("raspi".into());
+    let mountpoint = p
+        .fields
+        .iter()
+        .find(|f| f.label.contains("mountpoint"))
+        .unwrap();
+    assert_eq!(mountpoint.default, "./sshfs/raspi");
+}
+
+#[test]
+fn mount_point_expands_tilde() {
+    // sshfs is spawned without a shell, so `~/dir` has to be expanded here or
+    // both the mkdir and the mount land on a directory literally named `~`.
+    // This is the resolver `submit_prompt` itself calls; the run path beyond it
+    // (create_dir_all + spawn) needs sshfs installed and writes to $HOME, so it
+    // is not covered.
+    let home = dirs::home_dir().unwrap_or_default();
+    assert_eq!(
+        mount_point("raspi", "~/exampledirectory"),
+        home.join("exampledirectory").to_string_lossy()
+    );
+    assert_eq!(mount_point("raspi", "~"), home.to_string_lossy());
+    assert_eq!(mount_point("raspi", ""), "./sshfs/raspi");
+    assert_eq!(mount_point("raspi", "/mnt/raspi"), "/mnt/raspi");
+}
+
+/// A mount wizard with the rights choice already set.
+fn mount_prompt(choice: usize) -> Prompt {
+    let mut p = Prompt::mount("crusader".into());
+    p.fields[2].choice = choice;
+    p
+}
+
+#[test]
+fn mount_without_sudo_is_a_plain_sshfs() {
+    let spec = MountSpec::from_fields("crusader", &mount_prompt(0).fields);
+    assert_eq!(spec.argv(), vec!["sshfs", "crusader:", "./sshfs/crusader"]);
+}
+
+#[test]
+fn mount_with_nopasswd_sudo_wraps_the_server() {
+    let spec = MountSpec::from_fields("crusader", &mount_prompt(1).fields);
+    assert_eq!(
+        spec.argv(),
+        vec![
+            "sshfs",
+            "-o",
+            "sftp_server=sudo /usr/lib/openssh/sftp-server",
+            "crusader:",
+            "./sshfs/crusader",
+        ]
+    );
+}
+
+#[test]
+fn mount_never_offers_to_send_a_password() {
+    // Every way of feeding sudo a password from here leaks it into `ps` on
+    // both machines, so the mode does not exist: NOPASSWD or nothing.
+    let p = Prompt::mount("crusader".into());
+    let options = match &p.fields[2].kind {
+        Kind::Choice(o) => o.clone(),
+        _ => panic!("the rights field must be a choice"),
+    };
+    assert_eq!(options.len(), 2, "only plain and NOPASSWD");
+    assert!(!options.iter().any(|o| o.contains("password")));
+    assert!(
+        p.fields
+            .iter()
+            .all(|f| !f.label.to_lowercase().contains("password"))
+    );
+    for choice in 0..options.len() {
+        let argv = MountSpec::from_fields("crusader", &mount_prompt(choice).fields).argv();
+        assert!(
+            !argv.iter().any(|a| a.contains("sudo -S")),
+            "no password is ever piped to sudo"
+        );
+    }
+}
+
+#[test]
+fn mount_refuses_a_comma_in_the_server_path() {
+    // sshfs splits -o values on commas, so the option would be misparsed.
+    let mut p = mount_prompt(1);
+    p.fields[3].value = "/usr/lib,openssh/sftp-server".into();
+    assert!(
+        MountSpec::from_fields("crusader", &p.fields)
+            .problem()
+            .is_some()
+    );
+    assert!(
+        MountSpec::from_fields("crusader", &mount_prompt(1).fields)
+            .problem()
+            .is_none()
+    );
+}
+
+#[test]
+fn mount_hides_the_server_path_until_sudo_is_picked() {
+    let mut plain = mount_prompt(0);
+    assert!(
+        !plain.visible(3),
+        "a plain mount never needs the server path"
+    );
+    plain.idx = 2;
+    assert!(
+        plain.on_last_field(),
+        "so Enter on the rights field submits"
+    );
+    assert!(mount_prompt(1).visible(3), "NOPASSWD needs it");
+}
+
+#[test]
+fn mount_rights_cycle_with_h_and_l() {
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('m')));
+    app.on_key(press(KeyCode::Tab));
+    app.on_key(press(KeyCode::Tab)); // onto the rights choice
+    assert_eq!(app.prompt.as_ref().unwrap().idx, 2);
+    app.on_key(press(KeyCode::Char('l')));
+    assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 1);
+    app.on_key(press(KeyCode::Char('h')));
+    assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 0);
+    app.on_key(press(KeyCode::Left)); // wraps back round
+    assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 1);
+    // h/l are the answer here, never typed text.
+    assert!(app.prompt.as_ref().unwrap().fields[2].value.is_empty());
+}
+
+#[test]
+fn mount_tab_skips_the_hidden_fields() {
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('m')));
+    for _ in 0..2 {
+        app.on_key(press(KeyCode::Tab));
+    }
+    assert_eq!(app.prompt.as_ref().unwrap().idx, 2, "on the rights choice");
+    app.on_key(press(KeyCode::Tab)); // no sudo → wraps past the hidden field
+    assert_eq!(app.prompt.as_ref().unwrap().idx, 0);
+}
+
+#[test]
+fn mount_wizard_survives_a_wrapping_preview() {
+    // The sudo preview is wider than the box. Sizing it by line count instead
+    // of wrapped rows pushed the key hints out through the border.
+    let mut app = app_with_host();
+    app.on_key(press(KeyCode::Char('m')));
+    app.prompt.as_mut().unwrap().fields[2].choice = 1;
+    let screen = render(&mut app);
+    assert!(
+        screen.contains("sftp_server=sudo"),
+        "the preview wraps to two rows"
+    );
+    assert!(
+        screen.contains("Tab move field"),
+        "hints clipped off the wizard"
+    );
+}
+
+#[test]
+fn mount_preview_matches_what_runs() {
+    // The preview must resolve the mountpoint exactly like the run path, so it
+    // goes through the same `mount_point`.
+    let mut p = Prompt::mount("raspi".into());
+    let idx = p
+        .fields
+        .iter()
+        .position(|f| f.label.contains("mountpoint"))
+        .unwrap();
+    p.fields[idx].value = "~/exampledirectory".into();
+    assert_eq!(
+        p.command_preview().unwrap(),
+        format!(
+            "sshfs raspi: {}",
+            mount_point("raspi", "~/exampledirectory")
+        )
+    );
+}
+
+#[test]
+fn mounts_tab_renders() {
+    let mut app = App::empty();
+    app.view = View::Mounts;
+    assert!(render(&mut app).contains("Mounts"));
+}
