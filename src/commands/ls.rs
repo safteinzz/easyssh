@@ -27,15 +27,22 @@ pub fn run(args: Args) {
         // Pad the alias column so the targets line up.
         let width = hosts.iter().map(|h| h.alias.len()).max().unwrap_or(0);
         for h in &hosts {
-            // Show the key too when the host pins one - handy for "which key is this?".
+            // Show the key too when the host pins one - handy for "which key is
+            // this?" - and the jump host, since a ProxyJump is the difference
+            // between an address you can reach and one you cannot.
             let key = match &h.identity {
                 Some(i) => format!("  ({i})"),
                 None => String::new(),
             };
+            let via = match &h.proxy_jump {
+                Some(j) => format!("  via {j}"),
+                None => String::new(),
+            };
             println!(
-                "  {:width$}  {}{}",
+                "  {:width$}  {}{}{}",
                 h.alias.bold(),
                 h.target().dimmed(),
+                via.dimmed(),
                 key.dimmed()
             );
         }

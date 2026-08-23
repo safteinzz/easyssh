@@ -14,13 +14,14 @@ impl App {
             return None;
         }
 
-        // On the IdentityFile field, Ctrl-o opens a picker of ~/.ssh keys so you
-        // choose one instead of typing the path; typing still works for anything
-        // custom. Only meaningful on that field, so it is a no-op elsewhere.
+        // Ctrl-o fills the field from what the app already knows: the keys in
+        // ~/.ssh for IdentityFile, the config hosts for ProxyJump. Typing still
+        // works for anything custom, and it is a no-op on every other field.
         if ctrl && key.code == KeyCode::Char('o') {
             let p = self.prompt.as_ref().unwrap();
-            if p.fields[p.idx].label.contains("IdentityFile") {
-                let idx = p.idx;
+            let idx = p.idx;
+            let label = p.fields[idx].label.clone();
+            if label.contains("IdentityFile") {
                 let items: Vec<String> = keys::list()
                     .iter()
                     .map(|k| format!("~/.ssh/{}", k.name()))
@@ -30,6 +31,20 @@ impl App {
                 } else {
                     self.picker = Some(Picker {
                         title: "Pick a key for IdentityFile".into(),
+                        items,
+                        idx: 0,
+                        action: PickerAction::FillField { field: idx },
+                    });
+                }
+            } else if label.contains("ProxyJump") {
+                // A jump host is another entry in this same config, so it is
+                // picked from the list rather than spelled out again.
+                let items: Vec<String> = self.hosts.iter().map(|h| h.alias.clone()).collect();
+                if items.is_empty() {
+                    self.set_status("no hosts in ~/.ssh/config to jump through");
+                } else {
+                    self.picker = Some(Picker {
+                        title: "Which host does ssh hop through? (ProxyJump)".into(),
                         items,
                         idx: 0,
                         action: PickerAction::FillField { field: idx },
@@ -78,6 +93,7 @@ impl App {
             || (ctrl && matches!(key.code, KeyCode::Char('k') | KeyCode::Left));
 
         if next {
+            self.split_pasted_target();
             let p = self.prompt.as_mut().unwrap();
             p.idx = p.step(1);
             return None;
@@ -99,6 +115,7 @@ impl App {
                 self.set_status("cancelled");
             }
             KeyCode::Enter => {
+                self.split_pasted_target();
                 let p = self.prompt.as_mut().unwrap();
                 if p.on_last_field() {
                     return self.submit_prompt();
@@ -122,6 +139,46 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// Re-do whatever a changed setting decides, so a new value is visible in
+    /// the same frame rather than at the next launch.
+    pub(super) fn apply_settings(&mut self) {
+        self.sort_hosts();
+        self.start_probes();
+        let n = self.host_rows().len();
+        Self::clamp(&mut self.host_state, n);
+    }
+
+    /// A destination pasted into the add-host Alias field (`deploy@10.0.0.4:2222`,
+    /// the thing a console or a colleague hands you) is split across the fields
+    /// it actually describes, so the fastest way to add a host is one paste.
+    /// Runs when you leave the field, and only for a value that really is a
+    /// destination: a plain word is somebody typing an alias.
+    pub(super) fn split_pasted_target(&mut self) {
+        let Some(p) = self.prompt.as_mut() else {
+            return;
+        };
+        // Only the add wizard: rewriting the alias of a host that already exists
+        // would rename it behind the user's back.
+        if !matches!(p.action, Action::AddHost) || p.idx != 0 {
+            return;
+        }
+        let Some(t) = sshcfg::parse_target(&p.fields[0].value) else {
+            return;
+        };
+        p.fields[0].value = t.alias;
+        p.fields[1].value = t.hostname.clone();
+        if !t.user.is_empty() {
+            p.fields[2].value = t.user;
+        }
+        if !t.port.is_empty() {
+            p.fields[3].value = t.port;
+        }
+        self.set_status(format!(
+            "split the pasted destination into fields ({})",
+            t.hostname
+        ));
     }
 
     /// Consume the active prompt and carry out its action. Returns a `PendingRun`
@@ -154,6 +211,7 @@ impl App {
                     user: v[2].clone(),
                     port,
                     identity: v[4].clone(),
+                    proxy_jump: v[5].clone(),
                 };
                 match sshcfg::add_host(&nh) {
                     Ok(_) => {
@@ -182,6 +240,7 @@ impl App {
                     user: v[2].clone(),
                     port,
                     identity: v[4].clone(),
+                    proxy_jump: v[5].clone(),
                 };
                 match sshcfg::update_host(&original, &nh) {
                     Ok(_) => {
@@ -220,6 +279,7 @@ impl App {
                 Some(PendingRun {
                     argv,
                     label: format!("ssh-keygen -t {kind}"),
+                    connect: None,
                 })
             }
 
@@ -246,7 +306,26 @@ impl App {
                 Some(PendingRun {
                     argv: spec.argv(),
                     label: format!("sshfs {host}: → {local}"),
+                    connect: None,
                 })
+            }
+
+            Action::EditSetting { key, label } => {
+                // Blank means "back to how it ships", which is the same thing
+                // deleting the line from the file does.
+                let value = if v[0].is_empty() {
+                    prompt.fields[0].default.clone()
+                } else {
+                    v[0].clone()
+                };
+                self.settings.set(&key, &value);
+                let msg = match self.settings.save() {
+                    Ok(_) => format!("{label} = {value}"),
+                    Err(e) => format!("could not save settings: {e}"),
+                };
+                self.apply_settings();
+                self.set_status(msg);
+                None
             }
 
             Action::Forward { host } => {

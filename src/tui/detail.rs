@@ -1,0 +1,303 @@
+//! The panel beside the list: everything known about the selected row, so the
+//! answers you would otherwise go looking for (is it up, when was I last on it,
+//! which key does it use, is that key even in my agent) are on screen already.
+//!
+//! It only appears when the terminal is wide enough to keep a readable list
+//! next to it; below that the list gets the whole width.
+
+use ratatui::prelude::*;
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+
+use super::*;
+
+/// Narrowest total width that still leaves a usable list beside the panel.
+pub(super) const MIN_WIDTH_FOR_DETAIL: u16 = 96;
+/// The panel's share of the frame when it is shown.
+pub(super) const DETAIL_PCT: u16 = 38;
+
+/// Does this view have a detail panel, and is there room for it? A tunnel says
+/// everything it knows on its one line, so it keeps the width.
+pub(super) fn detail_fits(app: &App, width: u16) -> bool {
+    matches!(
+        app.view,
+        View::Hosts | View::Keys | View::Mounts | View::Settings
+    ) && width >= MIN_WIDTH_FOR_DETAIL
+}
+
+pub(super) fn render_detail(f: &mut Frame, area: Rect, app: &App) {
+    let lines = match app.view {
+        View::Hosts => host_lines(app),
+        View::Keys => key_lines(app),
+        View::Mounts => mount_lines(app),
+        View::Settings => setting_lines(app),
+        _ => Vec::new(),
+    };
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Details ")
+                .padding(Padding::horizontal(1)),
+        )
+        .wrap(Wrap { trim: false });
+    f.render_widget(para, area);
+}
+
+fn host_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(h) = app.selected_host() else {
+        return vec![Line::styled("nothing selected", dim())];
+    };
+    let mut lines = vec![Line::styled(h.alias.clone(), heading()), Line::raw("")];
+
+    // State first: the two things that decide whether you press Enter at all.
+    lines.push(reach_line(app.reach.get(&h.alias)));
+    lines.push(match app.history.get(&h.alias) {
+        Some(e) => Line::styled(
+            format!(
+                "last {} · {} connect{}",
+                history::ago(e.last, history::now()),
+                e.count,
+                if e.count == 1 { "" } else { "s" }
+            ),
+            dim(),
+        ),
+        None => Line::styled("never connected from here", dim()),
+    });
+    lines.push(Line::raw(""));
+
+    for (label, value) in [
+        ("HostName", h.hostname.clone()),
+        ("User", h.user.clone()),
+        ("Port", h.port.clone()),
+        ("Key", h.identity.clone()),
+        ("Via", h.proxy_jump.clone()),
+    ] {
+        if let Some(v) = value.filter(|v| !v.is_empty()) {
+            lines.push(row(label, v));
+        }
+    }
+
+    // What this host is currently doing, pulled from the other two tabs so you
+    // do not have to go and look.
+    let tunnels: Vec<String> = app
+        .tunnels
+        .iter()
+        .filter(|t| t.host == h.alias)
+        .map(|t| format!("-{} {}", t.kind, t.spec))
+        .collect();
+    let mounts: Vec<String> = app
+        .mounts
+        .iter()
+        .filter(|m| {
+            // `/proc/mounts` shows the sshfs source as `[user@]host:path`; the
+            // host part is what we mounted, which is this alias.
+            let src = m.remote.split(':').next().unwrap_or("");
+            src.rsplit('@').next().unwrap_or(src) == h.alias
+        })
+        .map(|m| m.local.clone())
+        .collect();
+    if !tunnels.is_empty() || !mounts.is_empty() {
+        lines.push(Line::raw(""));
+        if !tunnels.is_empty() {
+            lines.push(row("Tunnels", tunnels.join(", ")));
+        }
+        if !mounts.is_empty() {
+            lines.push(row("Mounts", mounts.join(", ")));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        format!("ssh {}", h.alias),
+        Style::default().fg(Color::Green),
+    ));
+    lines
+}
+
+fn key_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(k) = app.selected_key() else {
+        return vec![Line::styled("nothing selected", dim())];
+    };
+    let mut lines = vec![Line::styled(k.name(), heading()), Line::raw("")];
+
+    let size = if k.bits.is_empty() {
+        k.kind.clone()
+    } else {
+        format!("{} {} bits", k.kind, k.bits)
+    };
+    lines.push(row("Type", size));
+    // The fingerprint gets its own line: `SHA256:` already says what it is, and
+    // a label column in front of it would only push it into a ragged wrap.
+    if !k.fingerprint.is_empty() {
+        lines.push(Line::styled(k.fingerprint.clone(), dim()));
+    }
+    if !k.comment.is_empty() {
+        lines.push(row("Comment", k.comment.clone()));
+    }
+    lines.push(row("Path", tilde(&k.path)));
+    lines.push(Line::raw(""));
+
+    // The two facts that decide whether a connect with this key is silent or
+    // asks you for something.
+    lines.push(Line::from(vec![
+        label("Agent"),
+        match k.agent_loaded {
+            true => Span::styled("loaded (ssh-add -l)", Style::default().fg(Color::Green)),
+            false => Span::styled("not loaded (ssh-add <key>)", dim()),
+        },
+    ]));
+    lines.push(Line::from(vec![
+        label("Unlock"),
+        match k.encrypted {
+            true => Span::styled(
+                "passphrase on every use",
+                Style::default().fg(Color::Yellow),
+            ),
+            false => Span::styled("none: the file is the secret", dim()),
+        },
+    ]));
+
+    lines.push(Line::raw(""));
+    lines.push(match k.used_by.is_empty() {
+        true => row("Used by", "no host pins it (IdentityFile)".into()),
+        false => row("Used by", k.used_by.join(", ")),
+    });
+    lines
+}
+
+fn mount_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(m) = app.selected_mount() else {
+        return vec![Line::styled("nothing selected", dim())];
+    };
+    let mut lines = vec![Line::styled(shorten(&m.local), heading()), Line::raw("")];
+
+    // A mount is a live ssh session, so the state of the host behind it is the
+    // first thing that explains a directory that has gone unresponsive. We only
+    // know it for a host that is also in the config and has been probed.
+    if let Some(reach) = app.reach.get(m.host()) {
+        lines.push(reach_line(Some(reach)));
+        lines.push(Line::raw(""));
+    }
+
+    lines.push(row("Host", m.host().to_string()));
+    if let Some(user) = m.user() {
+        lines.push(row("As", user.to_string()));
+    }
+    lines.push(row("Remote", m.remote_path().to_string()));
+    lines.push(row("Local", shorten(&m.local)));
+    lines.push(row(
+        "Access",
+        match m.has_option("ro") {
+            true => "read-only".to_string(),
+            false => "read and write".to_string(),
+        },
+    ));
+    // Who owns the files on this side. sshfs maps every remote file to one local
+    // uid/gid, which is why a mount can look like it is owned by you when the
+    // remote thinks otherwise.
+    if let (Some(uid), gid) = (m.option("user_id"), m.option("group_id")) {
+        lines.push(row(
+            "Shown as",
+            match gid {
+                Some(gid) => format!("uid {uid} · gid {gid} (locally)"),
+                None => format!("uid {uid} (locally)"),
+            },
+        ));
+    }
+    let others = m.other_options();
+    if !others.is_empty() {
+        lines.push(row("Flags", others.join(", ")));
+    }
+
+    lines.push(Line::raw(""));
+    // Shown home-relative like every other path here: this line is for a human
+    // with a shell, which expands `~` itself. The spawned unmount still gets the
+    // absolute `m.local`, because it runs without a shell.
+    lines.push(Line::styled(
+        format!("fusermount -u {}", shorten(&m.local)),
+        Style::default().fg(Color::Green),
+    ));
+    lines
+}
+
+fn setting_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(r) = app.selected_setting() else {
+        return vec![Line::styled("nothing selected", dim())];
+    };
+    let mut lines = vec![Line::styled(r.label.to_string(), heading()), Line::raw("")];
+    lines.push(Line::styled(r.help.to_string(), dim()));
+    lines.push(Line::raw(""));
+    lines.push(row("Now", r.value.clone()));
+    lines.push(row("Default", r.default.clone()));
+    if let Some(choices) = r.choices {
+        lines.push(row("Choices", choices.join(" · ")));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        match r.choices {
+            Some(_) => "↵ cycles it · d puts it back".to_string(),
+            None => "↵ types it · d puts it back".to_string(),
+        },
+        dim(),
+    ));
+    lines.push(Line::raw(""));
+    // The file is the real store; say where it is so it can be edited or
+    // version-controlled like anything else.
+    lines.push(Line::styled(
+        shorten(&settings::path().to_string_lossy()),
+        dim(),
+    ));
+    lines.push(row("Key", format!("{} = {}", r.key, r.value)));
+    lines
+}
+
+/// One `label   value` row, with the label dim so the value reads first.
+fn row(name: &str, value: String) -> Line<'static> {
+    Line::from(vec![label(name), Span::raw(value)])
+}
+
+/// The dim, fixed-width label column that keeps every value aligned.
+fn label(name: &str) -> Span<'static> {
+    Span::styled(format!("{name:<8} "), dim())
+}
+
+fn reach_line(reach: Option<&Reach>) -> Line<'static> {
+    match reach {
+        // A loopback or LAN answer rounds to zero, and "answered in 0 ms" reads
+        // like a missing number rather than a fast one.
+        Some(Reach::Up(0)) => Line::styled(
+            "● up · answered instantly".to_string(),
+            Style::default().fg(Color::Green),
+        ),
+        Some(Reach::Up(ms)) => Line::styled(
+            format!("● up · answered in {ms} ms"),
+            Style::default().fg(Color::Green),
+        ),
+        Some(Reach::Down) => Line::styled(
+            "● down · nothing listening on the ssh port",
+            Style::default().fg(Color::Red),
+        ),
+        Some(Reach::Probing) => Line::styled("○ checking the ssh port…", dim()),
+        None => Line::styled("○ not checked (r to check)", dim()),
+    }
+}
+
+/// `/home/you/.ssh/id_rsa` -> `~/.ssh/id_rsa`, which is how you wrote it.
+fn tilde(path: &std::path::Path) -> String {
+    shorten(&path.to_string_lossy())
+}
+
+/// The same shortening for a path we already hold as text.
+fn shorten(path: &str) -> String {
+    sshcfg::collapse_tilde(path)
+}
+
+fn dim() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
+}
+
+fn heading() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}

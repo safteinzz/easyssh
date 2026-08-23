@@ -14,9 +14,13 @@
 //! Everything you'd have to *look up* - new keys, copying keys, port forwards,
 //! mounts, adding a host - lives in the TUI, where there's nothing to remember.
 
+mod clip;
 mod commands;
+mod history;
 mod keys;
 mod mounts;
+mod reach;
+mod settings;
 mod sshcfg;
 mod tui;
 mod tunnels;

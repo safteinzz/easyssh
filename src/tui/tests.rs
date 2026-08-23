@@ -121,7 +121,7 @@ fn new_key_still_offers_rsa_for_old_servers() {
 #[test]
 fn form_typing_vs_field_nav() {
     let mut app = App::empty();
-    app.prompt = Some(Prompt::add_host()); // 5 fields, idx 0
+    app.prompt = Some(Prompt::add_host()); // six fields, idx 0
 
     // Plain h/j/k/l are literal text in a form.
     for c in ['h', 'j', 'k', 'l'] {
@@ -156,6 +156,7 @@ fn app_with_host() -> App {
         user: Some("pi".into()),
         port: None,
         identity: None,
+        proxy_jump: None,
     }];
     app.host_state.select(Some(0));
     app
@@ -236,8 +237,12 @@ fn y_picks_a_host_instead_of_typing_one() {
     app.keys = vec![keys::Key {
         path: "/home/u/.ssh/id_ed25519".into(),
         kind: "ED25519".into(),
+        bits: "256".into(),
         comment: String::new(),
         fingerprint: String::new(),
+        agent_loaded: false,
+        encrypted: false,
+        used_by: Vec::new(),
     }];
     app.key_state.select(Some(0));
     app.view = View::Keys;
@@ -342,15 +347,16 @@ fn picker_fills_identityfile_field() {
 }
 
 #[test]
-fn mount_defaults_under_sshfs_dir() {
-    // Mountpoints group under ./sshfs/<host> so leftovers do not clutter home.
-    let p = Prompt::mount("raspi".into());
+fn mount_defaults_under_the_mount_folder() {
+    // Mountpoints group under one folder so leftovers do not scatter, and the
+    // default is absolute so it does not depend on where essh was launched.
+    let p = Prompt::mount("raspi".into(), &Settings::default());
     let mountpoint = p
         .fields
         .iter()
         .find(|f| f.label.contains("mountpoint"))
         .unwrap();
-    assert_eq!(mountpoint.default, "./sshfs/raspi");
+    assert_eq!(mountpoint.default, "~/sshfs/raspi");
 }
 
 #[test]
@@ -362,17 +368,21 @@ fn mount_point_expands_tilde() {
     // is not covered.
     let home = dirs::home_dir().unwrap_or_default();
     assert_eq!(
-        mount_point("raspi", "~/exampledirectory"),
+        mount_point("~/sshfs/raspi", "~/exampledirectory"),
         home.join("exampledirectory").to_string_lossy()
     );
-    assert_eq!(mount_point("raspi", "~"), home.to_string_lossy());
-    assert_eq!(mount_point("raspi", ""), "./sshfs/raspi");
-    assert_eq!(mount_point("raspi", "/mnt/raspi"), "/mnt/raspi");
+    assert_eq!(mount_point("~/sshfs/raspi", "~"), home.to_string_lossy());
+    // Left blank, the field's own default applies - tilde expanded the same way.
+    assert_eq!(
+        mount_point("~/sshfs/raspi", ""),
+        home.join("sshfs/raspi").to_string_lossy()
+    );
+    assert_eq!(mount_point("~/sshfs/raspi", "/mnt/raspi"), "/mnt/raspi");
 }
 
 /// A mount wizard with the rights choice already set.
 fn mount_prompt(choice: usize) -> Prompt {
-    let mut p = Prompt::mount("crusader".into());
+    let mut p = Prompt::mount("crusader".into(), &Settings::default());
     p.fields[2].choice = choice;
     p
 }
@@ -380,12 +390,14 @@ fn mount_prompt(choice: usize) -> Prompt {
 #[test]
 fn mount_without_sudo_is_a_plain_sshfs() {
     let spec = MountSpec::from_fields("crusader", &mount_prompt(0).fields);
-    assert_eq!(spec.argv(), vec!["sshfs", "crusader:", "./sshfs/crusader"]);
+    let local = mount_point("~/sshfs/crusader", "");
+    assert_eq!(spec.argv(), vec!["sshfs", "crusader:", &local]);
 }
 
 #[test]
 fn mount_with_nopasswd_sudo_wraps_the_server() {
     let spec = MountSpec::from_fields("crusader", &mount_prompt(1).fields);
+    let local = mount_point("~/sshfs/crusader", "");
     assert_eq!(
         spec.argv(),
         vec![
@@ -393,7 +405,7 @@ fn mount_with_nopasswd_sudo_wraps_the_server() {
             "-o",
             "sftp_server=sudo /usr/lib/openssh/sftp-server",
             "crusader:",
-            "./sshfs/crusader",
+            &local,
         ]
     );
 }
@@ -402,7 +414,7 @@ fn mount_with_nopasswd_sudo_wraps_the_server() {
 fn mount_never_offers_to_send_a_password() {
     // Every way of feeding sudo a password from here leaks it into `ps` on
     // both machines, so the mode does not exist: NOPASSWD or nothing.
-    let p = Prompt::mount("crusader".into());
+    let p = Prompt::mount("crusader".into(), &Settings::default());
     let options = match &p.fields[2].kind {
         Kind::Choice(o) => o.clone(),
         _ => panic!("the rights field must be a choice"),
@@ -506,7 +518,7 @@ fn mount_wizard_survives_a_wrapping_preview() {
 fn mount_preview_matches_what_runs() {
     // The preview must resolve the mountpoint exactly like the run path, so it
     // goes through the same `mount_point`.
-    let mut p = Prompt::mount("raspi".into());
+    let mut p = Prompt::mount("raspi".into(), &Settings::default());
     let idx = p
         .fields
         .iter()
@@ -517,7 +529,7 @@ fn mount_preview_matches_what_runs() {
         p.command_preview().unwrap(),
         format!(
             "sshfs raspi: {}",
-            mount_point("raspi", "~/exampledirectory")
+            mount_point("~/sshfs/raspi", "~/exampledirectory")
         )
     );
 }
@@ -527,4 +539,137 @@ fn mounts_tab_renders() {
     let mut app = App::empty();
     app.view = View::Mounts;
     assert!(render(&mut app).contains("Mounts"));
+}
+
+#[test]
+fn slash_filters_the_list_and_esc_restores_it() {
+    // The README promises `/` filters the list you are on.
+    let mut app = App::empty();
+    app.hosts = ["web01", "web02", "raspi"]
+        .iter()
+        .map(|a| Host {
+            alias: (*a).into(),
+            hostname: Some("10.0.0.1".into()),
+            user: None,
+            port: None,
+            identity: None,
+            proxy_jump: None,
+        })
+        .collect();
+    app.host_state.select(Some(0));
+
+    app.on_key(press(KeyCode::Char('/')));
+    for c in "web".chars() {
+        app.on_key(press(KeyCode::Char(c)));
+    }
+    assert_eq!(app.host_rows().len(), 2, "only the web hosts survive");
+    // Enter keeps the filter and hands the keys back to the list.
+    app.on_key(press(KeyCode::Enter));
+    assert!(!app.searching);
+    assert_eq!(app.host_rows().len(), 2);
+
+    app.on_key(press(KeyCode::Esc));
+    assert_eq!(app.host_rows().len(), 3, "Esc puts every row back");
+}
+
+#[test]
+fn a_filtered_selection_acts_on_the_row_you_can_see() {
+    // A selection indexes the filtered rows; indexing the raw list would edit
+    // whichever host happened to sit at that position.
+    let mut app = App::empty();
+    app.hosts = ["alpha", "beta", "gamma"]
+        .iter()
+        .map(|a| Host {
+            alias: (*a).into(),
+            hostname: None,
+            user: None,
+            port: None,
+            identity: None,
+            proxy_jump: None,
+        })
+        .collect();
+    app.host_state.select(Some(0));
+    app.query = "gamma".into();
+    app.requery();
+    assert_eq!(app.selected_host().unwrap().alias, "gamma");
+}
+
+#[test]
+fn a_filter_does_not_follow_you_to_the_next_tab() {
+    let mut app = App::empty();
+    app.on_key(press(KeyCode::Char('/')));
+    app.on_key(press(KeyCode::Char('x')));
+    app.on_key(press(KeyCode::Enter));
+    assert_eq!(app.query, "x");
+    app.cycle_view(1);
+    assert!(
+        app.query.is_empty(),
+        "the query belongs to the list you typed it over"
+    );
+}
+
+#[test]
+fn filter_matches_substrings_and_subsequences() {
+    assert!(
+        filter::matches("", &["anything"]),
+        "no query keeps every row"
+    );
+    assert!(filter::matches("WEB", &["web01"]), "case does not matter");
+    assert!(filter::matches("wb1", &["web-01"]), "gaps are allowed");
+    assert!(
+        filter::matches("pi", &["raspi", "other"]),
+        "any field can match"
+    );
+    assert!(!filter::matches("zzz", &["web01"]));
+}
+
+#[test]
+fn the_mount_folder_setting_decides_where_a_mount_lands() {
+    // Settings promises the mount folder is where a mount lands; the wizard has
+    // to offer it, and the command that runs has to use what the wizard offered.
+    let mut s = Settings::default();
+    s.set("mount_root", "/mnt");
+    let p = Prompt::mount("raspi".into(), &s);
+    let field = p
+        .fields
+        .iter()
+        .find(|f| f.label.contains("mountpoint"))
+        .unwrap();
+    assert_eq!(field.default, "/mnt/raspi");
+    assert_eq!(
+        MountSpec::from_fields("raspi", &p.fields).local,
+        "/mnt/raspi",
+        "a blank field runs what the box offered"
+    );
+}
+
+#[test]
+fn a_connect_run_says_so_rather_than_being_recognised_by_name() {
+    // History and the changed-host-key probe both key off this, and `ssh` stops
+    // being argv[0] the moment the ssh_command setting names a wrapper.
+    let mut app = app_with_host();
+    app.settings.set("ssh_command", "kitten ssh");
+    let run = app.on_key(press(KeyCode::Enter)).expect("Enter connects");
+    assert_eq!(run.argv, vec!["kitten", "ssh", "raspi"]);
+    assert_eq!(run.connect.as_deref(), Some("raspi"));
+
+    // Everything else is not a connect, so it never stamps the history.
+    let mut app = App::empty();
+    app.view = View::Keys;
+    app.on_key(press(KeyCode::Char('c')));
+    let run = app.on_key(press(KeyCode::Enter)); // ed25519 -> the keygen wizard
+    assert!(run.is_none());
+}
+
+#[test]
+fn settings_tab_renders_its_two_groups() {
+    // Deliberately no key presses: every change in that tab saves at once, and
+    // a test must never write the real ~/.config/easyssh/settings.
+    let mut app = App::empty();
+    app.view = View::Settings;
+    app.settings_state.select(Some(0));
+    let screen = render(&mut app);
+    assert!(screen.contains("Settings"), "the tab is drawn");
+    assert!(screen.contains("behaviour"), "grouped by what it promises");
+    assert!(screen.contains("defaults"));
 }

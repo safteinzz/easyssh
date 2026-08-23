@@ -104,6 +104,7 @@ impl App {
                     choice.clone(),
                 ],
                 label: format!("ssh-copy-id -> {choice}"),
+                connect: None,
             }),
             PickerAction::FillField { field } => {
                 if let Some(f) = self.prompt.as_mut().and_then(|p| p.fields.get_mut(field)) {

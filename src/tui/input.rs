@@ -26,7 +26,43 @@ impl App {
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
+        if self.searching {
+            return self.search_key(key);
+        }
         self.nav_key(key)
+    }
+
+    /// Typing a `/` filter. Everything printable goes into the query, so this
+    /// has to run before the per-view letters; the list keeps updating under it
+    /// and the arrows still move, which is what makes "type then Enter" work.
+    pub(super) fn search_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return None;
+        }
+        match key.code {
+            // Esc drops the filter entirely; Enter keeps it and hands the keys
+            // back to the list, so you can search then act on what you found.
+            KeyCode::Esc => {
+                self.query.clear();
+                self.searching = false;
+                self.requery();
+            }
+            KeyCode::Enter => self.searching = false,
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.requery();
+            }
+            KeyCode::Down => self.move_sel(1),
+            KeyCode::Up => self.move_sel(-1),
+            KeyCode::Char(c) if !ctrl => {
+                self.query.push(c);
+                self.requery();
+            }
+            _ => {}
+        }
+        None
     }
 
     pub(super) fn nav_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
@@ -48,6 +84,21 @@ impl App {
             }
             KeyCode::Char('?') if !ctrl => {
                 self.show_help = true;
+                return None;
+            }
+            // `/` is the filter, the same key it is in vim, less and man.
+            KeyCode::Char('/') if !ctrl => {
+                self.query.clear();
+                self.searching = true;
+                self.requery();
+                return None;
+            }
+            // Outside a search, Esc's only job is to undo one: clearing the
+            // filter is the way back to the whole list.
+            KeyCode::Esc if !self.query.is_empty() => {
+                self.query.clear();
+                self.requery();
+                self.set_status("filter cleared");
                 return None;
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
@@ -79,6 +130,49 @@ impl App {
             View::Keys => self.keys_key(key),
             View::Tunnels => self.tunnels_key(key),
             View::Mounts => self.mounts_key(key),
+            View::Settings => self.settings_key(key),
+        }
+    }
+
+    /// The Settings tab. A cycled setting changes in place on Enter; a typed one
+    /// opens a one-field wizard. Every change is written to the file at once,
+    /// so there is no unsaved state to lose or a save key to remember.
+    pub(super) fn settings_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('e') => {
+                let row = self.selected_setting()?;
+                match row.choices {
+                    Some(_) => {
+                        self.settings.cycle(row.key, 1);
+                        let shown = self.selected_setting().map(|r| r.value).unwrap_or_default();
+                        let msg = match self.settings.save() {
+                            Ok(_) => format!("{} = {shown}", row.label),
+                            Err(e) => format!("could not save settings: {e}"),
+                        };
+                        self.apply_settings();
+                        self.set_status(msg);
+                    }
+                    None => self.prompt = Some(Prompt::edit_setting(&row)),
+                }
+                None
+            }
+            // `d` is "get rid of my answer", the same shape as delete elsewhere.
+            // Trivially redone, so no confirm gate.
+            KeyCode::Char('d') => {
+                let row = self.selected_setting()?;
+                self.settings.reset(row.key);
+                let _ = self.settings.save();
+                self.apply_settings();
+                self.set_status(format!("{} back to {}", row.label, row.default));
+                None
+            }
+            KeyCode::Char('r') => {
+                self.settings = crate::settings::load();
+                self.apply_settings();
+                self.set_status(format!("reloaded {}", crate::settings::path().display()));
+                None
+            }
+            _ => None,
         }
     }
 
@@ -86,9 +180,14 @@ impl App {
         match key.code {
             KeyCode::Enter => {
                 let alias = self.selected_host()?.alias.clone();
+                // Whatever Settings says runs a login - plain ssh, or a wrapper
+                // like `kitten ssh` that wants its own arguments in front.
+                let mut argv = self.settings.ssh_argv();
+                argv.push(alias.clone());
                 Some(PendingRun {
-                    argv: vec!["ssh".into(), alias.clone()],
-                    label: format!("ssh {alias}"),
+                    label: format!("{} {alias}", argv[0]),
+                    argv,
+                    connect: Some(alias),
                 })
             }
             // `c` = create, the same key in every view (the tmux convention).
@@ -130,9 +229,26 @@ impl App {
                 self.set_status(msg);
                 None
             }
+            // Yank the connect command, since the reason to leave the toolbox
+            // for a host is almost always to paste `ssh <alias>` somewhere else.
+            KeyCode::Char('y') => {
+                let alias = self.selected_host()?.alias.clone();
+                let cmd = format!("ssh {alias}");
+                self.set_status(match crate::clip::copy(&cmd) {
+                    Ok(tool) => format!("copied '{cmd}' to the clipboard ({tool})"),
+                    Err(e) => format!("clipboard: {e}"),
+                });
+                None
+            }
+            KeyCode::Char('r') => {
+                self.refresh_hosts();
+                self.start_probes();
+                self.set_status("reloaded ~/.ssh/config, re-checking ports");
+                None
+            }
             KeyCode::Char('m') => {
                 let alias = self.selected_host()?.alias.clone();
-                self.prompt = Some(Prompt::mount(alias));
+                self.prompt = Some(Prompt::mount(alias, &self.settings));
                 None
             }
             KeyCode::Char('t') => {
@@ -185,6 +301,28 @@ impl App {
                     idx: 0,
                     action: PickerAction::CopyKeyTo { key: path },
                 });
+                None
+            }
+            // `Y` is the same yank one level louder: the public key text itself,
+            // for the web form or the ticket that is asking for it.
+            KeyCode::Char('Y') => {
+                let path = self.selected_key()?.path.clone();
+                let pubpath = path.with_extension("pub");
+                self.set_status(match fs::read_to_string(&pubpath) {
+                    Ok(text) => match crate::clip::copy(text.trim()) {
+                        Ok(tool) => format!(
+                            "copied {}.pub to the clipboard ({tool})",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                        Err(e) => format!("clipboard: {e}"),
+                    },
+                    Err(e) => format!("cannot read {}: {e}", pubpath.display()),
+                });
+                None
+            }
+            KeyCode::Char('r') => {
+                self.refresh_keys();
+                self.set_status("reloaded ~/.ssh keys and the agent");
                 None
             }
             _ => None,

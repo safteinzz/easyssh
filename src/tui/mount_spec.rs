@@ -3,24 +3,15 @@
 
 use super::*;
 
-/// The local mountpoint a mount wizard will use: `./sshfs/<host>` when the field
-/// is blank (so leftovers stay grouped), with a typed `~` expanded because sshfs
-/// is spawned without a shell and would otherwise mount onto a directory named
-/// `~`. Shared by `submit_prompt` and `command_preview` so the preview cannot
-/// drift from the command that actually runs.
-pub(super) fn mount_point(host: &str, typed: &str) -> String {
-    let raw = if typed.is_empty() {
-        format!("./sshfs/{host}")
-    } else {
-        typed.to_string()
-    };
-    sshcfg::expand_tilde(&raw).to_string_lossy().into_owned()
+/// The local mountpoint a mount wizard will use: the field's own default when
+/// it is left blank (`<mount root>/<host>`, so leftovers stay grouped), with a
+/// typed `~` expanded because sshfs is spawned without a shell and would
+/// otherwise mount onto a directory named `~`. Shared by `submit_prompt` and
+/// `command_preview` so the preview cannot drift from the command that runs.
+pub(super) fn mount_point(default: &str, typed: &str) -> String {
+    let raw = if typed.is_empty() { default } else { typed };
+    sshcfg::expand_tilde(raw).to_string_lossy().into_owned()
 }
-
-/// Where OpenSSH's sftp server usually lives. Distros move it (`/usr/libexec/
-/// openssh/`, `/usr/lib/ssh/`), and nothing local can see the remote layout, so
-/// this is an editable default rather than a guess we hide.
-pub(super) const SFTP_SERVER: &str = "/usr/lib/openssh/sftp-server";
 
 /// Who the remote side runs the sftp server as. Mirrors the "Remote rights"
 /// choice field, in the same order.
@@ -58,15 +49,17 @@ pub(crate) struct MountSpec {
 impl MountSpec {
     pub(super) fn from_fields(host: &str, fields: &[Field]) -> Self {
         let v = |i: usize| fields[i].value.trim();
+        // Both of these fall back to the field's own default, which the mount
+        // wizard filled in from Settings - so what runs is what the box offered.
         let server = if v(3).is_empty() {
-            SFTP_SERVER.to_string()
+            fields[3].default.clone()
         } else {
             v(3).to_string()
         };
         Self {
             host: host.to_string(),
             remote: v(0).to_string(),
-            local: mount_point(host, v(1)),
+            local: mount_point(&fields[1].default, v(1)),
             sudo: Sudo::from_choice(fields[2].choice),
             server,
         }

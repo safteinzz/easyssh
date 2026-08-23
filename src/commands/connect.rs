@@ -14,21 +14,33 @@ pub fn run(args: Vec<String>) {
         std::process::exit(2);
     }
 
+    // Stamp the connect before handing the terminal over: `exec` never comes
+    // back, so there is no "after" in which to record it. The first argument is
+    // the destination; the rest are ssh's own flags.
+    crate::history::record(&args[0]);
+
+    // The same launcher the TUI uses: plain `ssh`, or whatever wrapper Settings
+    // names, so both ways in behave identically.
+    let launcher = crate::settings::load().ssh_argv();
+    let (program, leading) = launcher.split_first().expect("ssh_argv is never empty");
+    let program = program.clone();
+    let argv: Vec<String> = leading.iter().cloned().chain(args).collect();
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         // exec never returns on success; ssh takes over this PID and terminal.
-        let err = std::process::Command::new("ssh").args(&args).exec();
-        eprintln!("{}", format!("essh: could not run ssh: {err}").red());
+        let err = std::process::Command::new(&program).args(&argv).exec();
+        eprintln!("{}", format!("essh: could not run {program}: {err}").red());
         std::process::exit(127);
     }
 
     #[cfg(not(unix))]
     {
-        match std::process::Command::new("ssh").args(&args).status() {
+        match std::process::Command::new(&program).args(&argv).status() {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(e) => {
-                eprintln!("{}", format!("essh: could not run ssh: {e}").red());
+                eprintln!("{}", format!("essh: could not run {program}: {e}").red());
                 std::process::exit(127);
             }
         }

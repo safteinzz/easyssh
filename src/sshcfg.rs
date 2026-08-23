@@ -21,6 +21,9 @@ pub struct Host {
     pub user: Option<String>,
     pub port: Option<String>,
     pub identity: Option<String>,
+    /// `ProxyJump`: the alias ssh hops through to reach this host, for boxes
+    /// that are not routable from here.
+    pub proxy_jump: Option<String>,
 }
 
 impl Host {
@@ -47,6 +50,7 @@ pub struct NewHost {
     pub user: String,
     pub port: String,
     pub identity: String,
+    pub proxy_jump: String,
 }
 
 /// `~/.ssh`, honoring $HOME. Everything hangs off here.
@@ -66,6 +70,18 @@ pub fn expand_tilde(path: &str) -> PathBuf {
             Some(rest) => home().join(rest),
             None => PathBuf::from(path),
         },
+    }
+}
+
+/// The inverse of `expand_tilde`: a path under the home directory is shown the
+/// way you would have written it. Display only - never feed the result back to
+/// a command, since the children are spawned without a shell.
+pub fn collapse_tilde(path: &str) -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    let home = home.to_string_lossy();
+    match path.strip_prefix(&*home) {
+        Some(rest) if !home.is_empty() => format!("~{rest}"),
+        _ => path.to_string(),
     }
 }
 
@@ -100,6 +116,7 @@ fn merge_hosts(parsed: Vec<Host>) -> Vec<Host> {
             e.user = e.user.take().or(h.user);
             e.port = e.port.take().or(h.port);
             e.identity = e.identity.take().or(h.identity);
+            e.proxy_jump = e.proxy_jump.take().or(h.proxy_jump);
         } else {
             merged.push(h);
         }
@@ -132,6 +149,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
     let mut user = None;
     let mut port = None;
     let mut identity = None;
+    let mut proxy_jump = None;
 
     // Closure-free flush would need to borrow all the locals mutably; a small
     // helper macro keeps the loop readable without fighting the borrow checker.
@@ -146,6 +164,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
                     user: user.clone(),
                     port: port.clone(),
                     identity: identity.clone(),
+                    proxy_jump: proxy_jump.clone(),
                 });
             }
         };
@@ -169,6 +188,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
                 user = None;
                 port = None;
                 identity = None;
+                proxy_jump = None;
                 aliases = value.split_whitespace().map(str::to_string).collect();
             }
             "include" => {
@@ -186,6 +206,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
             "user" => user = Some(value.to_string()),
             "port" => port = Some(value.to_string()),
             "identityfile" => identity = Some(value.to_string()),
+            "proxyjump" => proxy_jump = Some(value.to_string()),
             _ => {}
         }
     }
@@ -312,6 +333,7 @@ fn add_host_in(cfg: &Path, h: &NewHost) -> Result<()> {
                 user: h.user.clone(),
                 port: h.port.clone(),
                 identity: String::new(),
+                proxy_jump: h.proxy_jump.clone(),
             };
             body.push('\n');
             body.push_str(&render_block(&per_host));
@@ -443,6 +465,7 @@ fn render_block_lines(h: &NewHost) -> Vec<String> {
         ("User", &h.user),
         ("Port", &h.port),
         ("IdentityFile", &h.identity),
+        ("ProxyJump", &h.proxy_jump),
     ] {
         let val = val.trim();
         if !val.is_empty() {
@@ -525,6 +548,76 @@ fn harden(path: &Path, mode: u32) {
     }
     #[cfg(not(unix))]
     let _ = (path, mode);
+}
+
+/// A destination pasted from a terminal, a wiki or a cloud console:
+/// `[user@]hostname[:port]`, IPv6 in brackets included.
+pub struct Target {
+    /// A sensible alias to suggest: the first label of the name, or the whole
+    /// address when it is an IP (`10.0.0.5` has no shorter honest name).
+    pub alias: String,
+    pub user: String,
+    pub hostname: String,
+    pub port: String,
+}
+
+/// Split a pasted `[user@]hostname[:port]` into the fields the add-host wizard
+/// asks for, so the thing you already copied fills the form instead of being
+/// retyped four times.
+///
+/// Returns `None` for a plain word: that is somebody typing an alias, and
+/// silently rewriting it would be worse than doing nothing.
+pub fn parse_target(text: &str) -> Option<Target> {
+    let text = text.trim();
+    if text.is_empty() || !text.contains(['@', ':']) {
+        return None;
+    }
+    // Strip an `ssh://` scheme, which is what a cloud console tends to hand you.
+    let text = text.strip_prefix("ssh://").unwrap_or(text);
+
+    let (user, rest) = match text.rsplit_once('@') {
+        Some((u, r)) if !u.is_empty() && !r.is_empty() => (u.to_string(), r),
+        Some(_) => return None, // a lone `@` on one side is not a destination
+        None => (String::new(), text),
+    };
+
+    let (hostname, port) = if let Some(rest) = rest.strip_prefix('[') {
+        // Bracketed IPv6: `[::1]` or `[::1]:2222`.
+        let (addr, tail) = rest.split_once(']')?;
+        let port = tail.strip_prefix(':').unwrap_or("").to_string();
+        (addr.to_string(), port)
+    } else {
+        match rest.split_once(':') {
+            // A bare IPv6 address has several colons and no port; anything with
+            // one colon is `host:port`.
+            Some(_) if rest.matches(':').count() > 1 => (rest.to_string(), String::new()),
+            Some((h, p)) => (h.to_string(), p.to_string()),
+            None => (rest.to_string(), String::new()),
+        }
+    };
+
+    if hostname.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(Target {
+        alias: suggest_alias(&hostname),
+        user,
+        hostname,
+        port,
+    })
+}
+
+/// `web01.eu.example.com` -> `web01`, but `10.0.0.5` and `::1` stay whole: the
+/// first dot-separated label of an IP address is not a name for anything.
+fn suggest_alias(hostname: &str) -> String {
+    let looks_like_ip = hostname.contains(':')
+        || hostname
+            .split('.')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+    if looks_like_ip {
+        return hostname.to_string();
+    }
+    hostname.split('.').next().unwrap_or(hostname).to_string()
 }
 
 #[cfg(test)]
@@ -624,6 +717,77 @@ Host alpha beta
     }
 
     #[test]
+    fn a_pasted_destination_splits_into_fields() {
+        // The README promises pasting `user@host:port` into the alias field
+        // fills the rest, which is only true if every shape parses.
+        let t = parse_target("deploy@10.0.0.4:2222").unwrap();
+        assert_eq!(t.user, "deploy");
+        assert_eq!(t.hostname, "10.0.0.4");
+        assert_eq!(t.port, "2222");
+        assert_eq!(t.alias, "10.0.0.4", "an IP has no shorter honest name");
+
+        // A name gets its first label as the suggested alias.
+        let t = parse_target("root@web01.eu.example.com").unwrap();
+        assert_eq!((t.alias.as_str(), t.user.as_str()), ("web01", "root"));
+        assert!(t.port.is_empty());
+
+        // Bracketed IPv6, with and without a scheme in front.
+        let t = parse_target("ssh://me@[2001:db8::1]:2222").unwrap();
+        assert_eq!(t.hostname, "2001:db8::1");
+        assert_eq!(t.port, "2222");
+        // A bare IPv6 address is all colons and no port.
+        let t = parse_target("2001:db8::1").unwrap();
+        assert_eq!(t.hostname, "2001:db8::1");
+        assert!(t.port.is_empty());
+    }
+
+    #[test]
+    fn a_plain_word_is_an_alias_not_a_destination() {
+        // Rewriting what somebody typed would be worse than doing nothing, so
+        // anything that is not clearly a destination parses to None.
+        assert!(parse_target("raspi").is_none());
+        assert!(parse_target("").is_none());
+        assert!(parse_target("host:notaport").is_none());
+        assert!(parse_target("@host").is_none());
+        assert!(parse_target("user@").is_none());
+    }
+
+    #[test]
+    fn tilde_collapse_is_the_inverse_of_expansion() {
+        // The panel shows paths the way you would have written them; the value
+        // handed to a command stays absolute.
+        let home = dirs::home_dir().unwrap_or_default();
+        let abs = home.join("sshfs/raspi");
+        assert_eq!(collapse_tilde(&abs.to_string_lossy()), "~/sshfs/raspi");
+        assert_eq!(collapse_tilde("/mnt/raspi"), "/mnt/raspi");
+        assert_eq!(expand_tilde(&collapse_tilde(&abs.to_string_lossy())), abs);
+    }
+
+    #[test]
+    fn proxy_jump_round_trips_through_a_block() {
+        // ProxyJump is a field essh writes and reads back, so a host added with
+        // one has to come back with it.
+        let cfg = temp_cfg("");
+        let nh = NewHost {
+            alias: "db".into(),
+            hostname: "10.0.0.5".into(),
+            user: "postgres".into(),
+            port: String::new(),
+            identity: String::new(),
+            proxy_jump: "bastion".into(),
+        };
+        add_host_in(&cfg, &nh).unwrap();
+        let text = fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains("ProxyJump bastion"));
+        let db = parse_str(&text)
+            .into_iter()
+            .find(|h| h.alias == "db")
+            .unwrap();
+        assert_eq!(db.proxy_jump.as_deref(), Some("bastion"));
+        fs::remove_file(&cfg).ok();
+    }
+
+    #[test]
     fn patterns_flagged() {
         assert!(is_pattern("*"));
         assert!(is_pattern("web-?"));
@@ -639,6 +803,7 @@ Host alpha beta
             user: "me".into(),
             port: "22".into(),
             identity: String::new(),
+            proxy_jump: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let hosts = parse_str(&fs::read_to_string(&cfg).unwrap());
@@ -660,6 +825,7 @@ Host alpha beta
             user: "deploy".into(),
             port: String::new(),
             identity: "~/.ssh/id_fleet".into(),
+            proxy_jump: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
@@ -693,6 +859,7 @@ Host alpha beta
             user: String::new(),
             port: String::new(),
             identity: "~/.ssh/id_fleet".into(),
+            proxy_jump: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
@@ -735,6 +902,7 @@ Host alpha beta
             user: String::new(),
             port: String::new(),
             identity: String::new(),
+            proxy_jump: String::new(),
         };
         update_host_in(&cfg, "a", &nh).unwrap();
         let hosts = parse_str(&fs::read_to_string(&cfg).unwrap());

@@ -22,12 +22,69 @@ pub struct Mount {
     pub remote: String,
     /// The local mountpoint.
     pub local: String,
+    /// The kernel's mount options, verbatim from `/proc/mounts`, e.g.
+    /// `rw,nosuid,nodev,relatime,user_id=1000,group_id=1000`. This is the only
+    /// record of how a mount was made once the command that made it is gone.
+    pub options: String,
 }
 
 impl Mount {
     /// One-line summary for the TUI: where it lives locally ← what it's mounting.
+    /// The local path is shown home-relative, the way it was typed; `local`
+    /// itself stays absolute because that is what `fusermount` is handed.
     pub fn describe(&self) -> String {
-        format!("{}  ←  {}", self.local, self.remote)
+        format!(
+            "{}  ←  {}",
+            crate::sshcfg::collapse_tilde(&self.local),
+            self.remote
+        )
+    }
+
+    /// The login half of the source: `pi@raspi` out of `pi@raspi:/home/pi`.
+    /// sshfs always writes `[user@]host:path`, so the first `:` is the split.
+    pub fn source(&self) -> &str {
+        self.remote.split(':').next().unwrap_or(&self.remote)
+    }
+
+    /// The host we mounted - the config alias, when that is what was typed.
+    pub fn host(&self) -> &str {
+        let src = self.source();
+        src.rsplit('@').next().unwrap_or(src)
+    }
+
+    /// The remote user, when the source names one.
+    pub fn user(&self) -> Option<&str> {
+        self.source().split_once('@').map(|(u, _)| u)
+    }
+
+    /// The remote directory. Empty in the source means sshfs took the login
+    /// home directory, which is worth saying in those words.
+    pub fn remote_path(&self) -> &str {
+        match self.remote.split_once(':') {
+            Some((_, path)) if !path.is_empty() => path,
+            _ => "~ (the login home directory)",
+        }
+    }
+
+    /// Whether a given mount option is set, e.g. `ro` or `allow_other`.
+    pub fn has_option(&self, name: &str) -> bool {
+        self.options.split(',').any(|o| o == name)
+    }
+
+    /// The value of a `key=value` mount option, e.g. `user_id`.
+    pub fn option(&self, name: &str) -> Option<&str> {
+        self.options
+            .split(',')
+            .find_map(|o| o.strip_prefix(name)?.strip_prefix('='))
+    }
+
+    /// Options that are not `key=value` and not one of the ones we already
+    /// spell out, so the panel can show what is left without repeating itself.
+    pub fn other_options(&self) -> Vec<&str> {
+        self.options
+            .split(',')
+            .filter(|o| !o.contains('=') && !matches!(*o, "rw" | "ro" | ""))
+            .collect()
     }
 }
 
@@ -43,9 +100,11 @@ pub fn list() -> Vec<Mount> {
             let dev = f.next()?;
             let mp = f.next()?;
             let fstype = f.next()?;
+            let options = f.next().unwrap_or("");
             (fstype == "fuse.sshfs").then(|| Mount {
                 remote: unescape(dev),
                 local: unescape(mp),
+                options: options.to_string(),
             })
         })
         .collect()

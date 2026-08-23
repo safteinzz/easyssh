@@ -4,7 +4,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use super::mount_spec::SFTP_SERVER;
 use super::*;
 
 /// One editable line in a wizard. `default` is shown in brackets and used when
@@ -77,11 +76,26 @@ impl Field {
 #[derive(Clone)]
 pub(crate) enum Action {
     AddHost,
-    EditHost { original: String },
-    NewKey { kind: String },
-    Mount { host: String },
-    Forward { host: String },
-    Reverse { host: String },
+    EditHost {
+        original: String,
+    },
+    NewKey {
+        kind: String,
+    },
+    Mount {
+        host: String,
+    },
+    /// Change one typed setting; cycled ones never open a wizard.
+    EditSetting {
+        key: String,
+        label: String,
+    },
+    Forward {
+        host: String,
+    },
+    Reverse {
+        host: String,
+    },
 }
 
 /// A modal wizard: a titled stack of fields plus the action to run on submit.
@@ -108,6 +122,7 @@ impl Prompt {
                 Field::new("User", ""),
                 Field::new("Port", "22"),
                 Field::new("IdentityFile (Ctrl-o to pick a key, optional)", ""),
+                Field::new("ProxyJump (Ctrl-o to pick a host to hop through)", ""),
             ],
         }
     }
@@ -132,6 +147,10 @@ impl Prompt {
                     "IdentityFile (Ctrl-o to pick a key, optional)",
                     h.identity.as_deref().unwrap_or(""),
                 ),
+                Field::filled(
+                    "ProxyJump (Ctrl-o to pick a host to hop through)",
+                    h.proxy_jump.as_deref().unwrap_or(""),
+                ),
             ],
         }
     }
@@ -150,21 +169,24 @@ impl Prompt {
         }
     }
 
-    pub(super) fn mount(host: String) -> Self {
+    /// The mount wizard. Its two defaults come from Settings, so "where do
+    /// mounts go" and "where is the sftp server" are answered once, not per mount.
+    pub(super) fn mount(host: String, settings: &Settings) -> Self {
+        let root = settings.mount_root.trim_end_matches('/');
         Self {
             title: format!("Mount {host} on a local folder (sshfs)"),
             idx: 0,
             action: Action::Mount { host: host.clone() },
             fields: vec![
                 Field::new("Remote path", "~ (home)"),
-                Field::new("Local mountpoint", &format!("./sshfs/{host}")),
+                Field::new("Local mountpoint", &format!("{root}/{host}")),
                 Field::choice(
                     "Remote rights",
                     &["your user (no sudo)", "root (requires NOPASSWD sudo)"],
                 ),
                 // Only the sudo mode needs the server-side binary, so it stays
                 // hidden for a plain mount.
-                Field::new("sftp-server on the server", SFTP_SERVER).shown_when(2, &[1]),
+                Field::new("sftp-server on the server", &settings.sftp_server).shown_when(2, &[1]),
             ],
         }
     }
@@ -178,6 +200,21 @@ impl Prompt {
                 Field::new(&format!("Remote port (the service on {host})"), ""),
                 Field::new("Local port (where you'll reach it)", "= remote"),
             ],
+        }
+    }
+
+    /// A one-field wizard for a typed setting, pre-filled with what it is now.
+    pub(super) fn edit_setting(row: &settings::Row) -> Self {
+        let mut field = Field::filled(row.help, &row.value);
+        field.default = row.default.clone();
+        Self {
+            title: format!("Setting: {}", row.label),
+            idx: 0,
+            action: Action::EditSetting {
+                key: row.key.to_string(),
+                label: row.label.to_string(),
+            },
+            fields: vec![field],
         }
     }
 
@@ -259,7 +296,7 @@ impl Prompt {
                 let remote = if v(1).is_empty() { local } else { v(1) };
                 Some(format!("ssh -N -R {remote}:localhost:{local} {host}"))
             }
-            Action::AddHost | Action::EditHost { .. } => None,
+            Action::AddHost | Action::EditHost { .. } | Action::EditSetting { .. } => None,
         }
     }
 }
