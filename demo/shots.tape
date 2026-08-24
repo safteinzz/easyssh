@@ -16,6 +16,7 @@ Output "/tmp/vhs-shots-throwaway.gif"
 
 Set Shell bash
 Set FontFamily "JetBrainsMono NF"
+Set Theme "Catppuccin Mocha"
 Set FontSize 15
 Set Width 1240
 Set Height 520

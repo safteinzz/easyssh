@@ -6,6 +6,8 @@
 stop typing flags, make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI
 <!-- desc:end -->
 
+## Install
+
 ```sh
 cargo install easyssh          # installs the `essh` command
 ```

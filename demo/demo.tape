@@ -18,6 +18,7 @@ Output "../readme-assets/demo.gif"
 Set Shell bash
 # The prompt is drawn with nerd-font glyphs; without this they render as boxes.
 Set FontFamily "JetBrainsMono NF"
+Set Theme "Catppuccin Mocha"
 Set FontSize 15
 Set Width 1500
 Set Height 760
