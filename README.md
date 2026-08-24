@@ -8,9 +8,13 @@ stop typing flags, make ssh easy - hosts, keys, tunnels, mounts and file copies 
 
 ## Install
 
-```sh
-cargo install easyssh          # installs the `essh` command
+```bash
+cargo install easyssh
+essh self check   # is a newer release out?
+essh self update  # install the latest
 ```
+
+No cargo yet? Rust installs the same way on every distro: [rustup.rs](https://rustup.rs).
 
 ![essh: finding a host, mounting it, opening a port forward, changing a default and connecting](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/demo.gif)
 
@@ -57,7 +61,7 @@ the remote sftp-server path. `↵` changes one, `d` puts it back, and it saves t
 
 ![Settings tab, grouped into behaviour and defaults](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/settings.png)
 
-## CLI
+## Commands
 
 The handful of things faster to type than to click.
 
@@ -66,29 +70,10 @@ essh                 # open the toolbox (TUI)
 essh <host> [args]   # connect - any unknown word is an ssh destination
 essh ls [-v]         # list hosts from ~/.ssh/config (-v adds target, key, jump)
 essh cp <src> <dst>  # scp with alias:path shorthand and auto -r for dirs
-essh self update     # reinstall the latest release from crates.io
-essh self check      # is there a newer release?
 ```
-
-## Keys
-
-`j/k` and the arrows move, `h/l` switch tab, `/` filters the list you are on, and
-`?` is the full cheat-sheet with the real command behind every action.
-
-| | |
-|---|---|
-| **Hosts** | `↵` connect · `c` new · `e` edit · `d` delete · `y` yank `ssh <host>` · `m` mount · `t`/`T` forward/expose a port · `R` clear a changed host key · `r` reload |
-| **Keys** | `c` new (`ssh-keygen`) · `y` copy to a host (`ssh-copy-id`) · `Y` yank the public key |
-| **Tunnels** | `d` kill · `r` refresh |
-| **Mounts** | `d` unmount · `r` refresh |
-| **Settings** | `↵` change · `d` back to default |
-
-Adding or editing a host covers `ProxyJump`, and a `user@host:port` pasted into
-the alias field splits itself across the rest.
 
 ## Notes
 
-- Linux-first: tunnel and mount tracking read `/proc`.
 - Yanking needs `wl-copy`, `xclip`, `xsel` or `pbcopy` on PATH; it names the one
   it used and installs nothing.
 - Where you connect is remembered in `~/.local/state/easyssh/history`, purely to
@@ -96,6 +81,11 @@ the alias field splits itself across the rest.
 - A smart frontend, not a reimplementation - it never stores your keys or
   passwords; the real `ssh` tools and your agent do the work.
 
+## Compatibility
+
+Linux. Tunnel and mount tracking read `/proc`, and unmounting shells out to
+`fusermount`, so macOS and BSD need a different implementation first.
+
 ## License
 
-AGPL-3.0-only.
+AGPL-3.0-only
