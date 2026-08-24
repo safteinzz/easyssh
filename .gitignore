@@ -10,3 +10,11 @@ GEMINI.md
 
 # Private reference material, never committed - see AGENTS.md
 /.nocommit
+
+# The screenshot rig's scratch: the staged home, its helper pids and the shell
+# it builds. `demo/stage.sh` and the tapes are the part worth keeping.
+/demo/home/
+/demo/bin/
+/demo/pids
+/demo/shellrc
+/demo/.env

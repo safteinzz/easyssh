@@ -40,6 +40,62 @@ impl Tunnel {
         )
     }
 
+    /// The three parts of a `-L`/`-R` spec: the port opened on this side, and
+    /// the `host:port` the far side connects onward to. `None` for a spec we
+    /// did not write (a bind address in front makes it four fields).
+    pub fn ports(&self) -> Option<(&str, &str, &str)> {
+        let mut f = self.spec.split(':');
+        match (f.next(), f.next(), f.next(), f.next()) {
+            (Some(open), Some(target), Some(port), None) => Some((open, target, port)),
+            _ => None,
+        }
+    }
+
+    /// What this forward does, in the words of what you would use it for.
+    pub fn explain(&self) -> String {
+        let Some((open, target, port)) = self.ports() else {
+            return format!("-{} {}", self.kind, self.spec);
+        };
+        // The middle field is resolved on the *far* side, so a bare `localhost`
+        // there means the server itself, not this machine.
+        let local_target = matches!(target, "localhost" | "127.0.0.1");
+        match (self.kind, local_target) {
+            ('L', true) => format!("localhost:{open} here is {}'s own {port}", self.host),
+            ('L', false) => format!(
+                "localhost:{open} here is {target}:{port}, reached from {}",
+                self.host
+            ),
+            (_, true) => format!("{}:{open} there is this machine's {port}", self.host),
+            (_, false) => format!(
+                "{}:{open} there is {target}:{port}, reached from here",
+                self.host
+            ),
+        }
+    }
+
+    /// The command that opened it, exactly as it was run.
+    pub fn command(&self) -> String {
+        format!("ssh -N -{} {} {}", self.kind, self.spec, self.host)
+    }
+
+    /// When it was opened: the log file is created as the tunnel is spawned, so
+    /// its mtime is the tunnel's birth time. `None` if the file has gone.
+    pub fn started_at(&self) -> Option<SystemTime> {
+        fs::metadata(&self.log).ok()?.modified().ok()
+    }
+
+    /// Whatever ssh wrote to stderr and kept running through - a warning about
+    /// a port already in use, say. Empty for a forward that is simply working.
+    pub fn stderr(&self) -> String {
+        fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
     /// A tunnel is alive while its PID still has a `/proc` entry (Linux).
     pub fn alive(&self) -> bool {
         proc_alive(self.pid)
@@ -163,17 +219,31 @@ pub fn open(kind: char, spec: &str, host: &str) -> Result<Tunnel> {
     let child = cmd.spawn().with_context(|| "spawning ssh tunnel")?;
     let pid = child.id();
 
-    // Give ssh a moment to connect; if it exited, report why from its stderr.
+    // Give ssh a moment to connect, then judge it by what it wrote rather than
+    // only by whether it is still running.
     sleep(Duration::from_millis(800));
-    if !proc_alive(pid) {
-        let reason = fs::read_to_string(&log).unwrap_or_default();
-        let _ = fs::remove_file(&log);
-        let first = reason
+    let stderr = fs::read_to_string(&log).unwrap_or_default();
+    let first = || {
+        stderr
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty())
-            .unwrap_or("ssh exited immediately");
-        bail!("{first}");
+            .unwrap_or("ssh exited immediately")
+            .to_string()
+    };
+    if !proc_alive(pid) {
+        let reason = first();
+        let _ = fs::remove_file(&log);
+        bail!("{reason}");
+    }
+    // A forward whose port is already taken does NOT kill ssh: it keeps the
+    // session open with no forward on it, which used to be listed as a live
+    // tunnel that quietly carried nothing. Take ssh at its word and clean up.
+    if forwarding_failed(&stderr) {
+        let reason = first();
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        let _ = fs::remove_file(&log);
+        bail!("{reason}");
     }
 
     let tunnel = Tunnel {
@@ -190,6 +260,19 @@ pub fn open(kind: char, spec: &str, host: &str) -> Result<Tunnel> {
     Ok(tunnel)
 }
 
+/// Did ssh tell us the forward itself could not be set up? These are the exact
+/// phrases OpenSSH uses; the session survives all of them, so nothing else
+/// would notice.
+fn forwarding_failed(stderr: &str) -> bool {
+    const FAILURES: [&str; 4] = [
+        "Address already in use",
+        "cannot listen to port",
+        "Could not request local forwarding",
+        "remote port forwarding failed",
+    ];
+    FAILURES.iter().any(|f| stderr.contains(f))
+}
+
 /// Terminate a tunnel by PID (SIGTERM via `kill`), delete its log, and forget it.
 pub fn kill(pid: u32) -> Result<()> {
     let all = list();
@@ -200,4 +283,77 @@ pub fn kill(pid: u32) -> Result<()> {
     let remaining: Vec<Tunnel> = all.into_iter().filter(|t| t.pid != pid).collect();
     save(&remaining)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tunnel(kind: char, spec: &str) -> Tunnel {
+        Tunnel {
+            pid: 1234,
+            kind,
+            spec: spec.to_string(),
+            host: "raspi".into(),
+            log: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn a_forward_explains_which_side_is_which() {
+        // The middle field of a spec is resolved on the far side, so a bare
+        // `localhost` there is the server, not this machine. Getting that
+        // backwards is the single most confusing thing about -L and -R.
+        let l = tunnel('L', "8080:localhost:80");
+        assert_eq!(l.explain(), "localhost:8080 here is raspi's own 80");
+
+        let r = tunnel('R', "9000:localhost:3000");
+        assert_eq!(r.explain(), "raspi:9000 there is this machine's 3000");
+
+        // A third host in the middle is neither end of the ssh session.
+        let via = tunnel('L', "5432:db.internal:5432");
+        assert_eq!(
+            via.explain(),
+            "localhost:5432 here is db.internal:5432, reached from raspi"
+        );
+    }
+
+    #[test]
+    fn the_command_is_the_one_that_ran() {
+        assert_eq!(
+            tunnel('L', "8080:localhost:80").command(),
+            "ssh -N -L 8080:localhost:80 raspi"
+        );
+    }
+
+    #[test]
+    fn a_spec_we_did_not_write_is_left_alone() {
+        // A bind address in front makes four fields; rather than mis-explain it,
+        // fall back to showing the flag as given.
+        let odd = tunnel('L', "127.0.0.1:8080:localhost:80");
+        assert!(odd.ports().is_none());
+        assert_eq!(odd.explain(), "-L 127.0.0.1:8080:localhost:80");
+    }
+
+    #[test]
+    fn ssh_saying_it_could_not_forward_is_a_failure() {
+        // ssh keeps the session open when a forward is refused, so the process
+        // being alive proves nothing. These are its own words for the failure.
+        assert!(forwarding_failed(
+            "bind [127.0.0.1]:5432: Address already in use"
+        ));
+        assert!(forwarding_failed(
+            "channel_setup_fwd_listener_tcpip: cannot listen to port: 5432"
+        ));
+        assert!(forwarding_failed("Could not request local forwarding."));
+        assert!(forwarding_failed(
+            "Warning: remote port forwarding failed for listen port 9000"
+        ));
+
+        // A working tunnel says nothing, and a banner is not a failure.
+        assert!(!forwarding_failed(""));
+        assert!(!forwarding_failed(
+            "Warning: Permanently added 'raspi' (ED25519)"
+        ));
+    }
 }

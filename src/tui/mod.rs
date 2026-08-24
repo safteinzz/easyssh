@@ -129,6 +129,10 @@ pub(super) struct App {
     pub(super) reach_gen: u64,
     pub(super) reach_tx: Sender<reach::Msg>,
     pub(super) reach_rx: Receiver<reach::Msg>,
+    /// A mount we just spawned, waiting to be selected once `/proc/mounts` shows
+    /// it. The mount itself runs suspended, so it does not exist yet when the
+    /// wizard hands the command over.
+    pub(super) new_mount: Option<String>,
     /// The choices that are yours rather than ssh's.
     pub(super) settings: Settings,
     pub(super) settings_state: ListState,
@@ -163,6 +167,7 @@ impl App {
             reach_gen: 0,
             reach_tx: tx,
             reach_rx: rx,
+            new_mount: None,
             settings: Settings::default(),
             settings_state: ListState::default(),
         }
@@ -373,6 +378,51 @@ impl App {
         }
     }
 
+    /// Jump to another view the way a finished action does. The filter belongs
+    /// to the list it was typed over, so it does not come along - and a mount
+    /// made from a filtered Hosts list would otherwise land on a Mounts tab that
+    /// hides it.
+    pub(super) fn goto_view(&mut self, view: View) {
+        self.view = view;
+        if !self.query.is_empty() || self.searching {
+            self.query.clear();
+            self.searching = false;
+            self.requery();
+        }
+    }
+
+    /// Put the cursor on the tunnel with this pid: the one you just made is the
+    /// one you are looking for, and on a busy list it is not row one.
+    pub(super) fn select_tunnel(&mut self, pid: u32) {
+        let at = self
+            .tunnel_rows()
+            .iter()
+            .position(|&r| self.tunnels[r].pid == pid);
+        if let Some(i) = at {
+            self.tunnel_state.select(Some(i));
+        }
+    }
+
+    /// The same for a mountpoint, once the kernel admits it exists.
+    pub(super) fn select_mount(&mut self, local: &str) {
+        let at = self
+            .mount_rows()
+            .iter()
+            .position(|&r| self.mounts[r].local == local);
+        if let Some(i) = at {
+            self.mount_state.select(Some(i));
+        }
+    }
+
+    /// Select the mount the last suspended `sshfs` was asked to make, now that
+    /// the lists have been reloaded. Does nothing if it never appeared, which is
+    /// what a failed mount looks like.
+    pub(super) fn settle_new_mount(&mut self) {
+        if let Some(local) = self.new_mount.take() {
+            self.select_mount(&local);
+        }
+    }
+
     /// Re-clamp every list after the query changed, and put the selection back
     /// at the top so the first match is the one under the cursor.
     pub(super) fn requery(&mut self) {
@@ -530,6 +580,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             };
             app.set_status(msg);
             app.refresh_all();
+            app.settle_new_mount();
         }
     }
     Ok(())

@@ -677,3 +677,58 @@ fn settings_tab_renders_its_two_groups() {
     assert!(screen.contains("behaviour"), "grouped by what it promises");
     assert!(screen.contains("defaults"));
 }
+
+#[test]
+fn a_new_tunnel_is_the_selected_one() {
+    // It lands at the bottom of a list you did not make, so selecting it is the
+    // app's job rather than three keypresses.
+    let mut app = App::empty();
+    app.view = View::Tunnels;
+    app.tunnels = [111, 222, 333]
+        .iter()
+        .map(|pid| tunnels::Tunnel {
+            pid: *pid,
+            kind: 'L',
+            spec: "8080:localhost:80".into(),
+            host: "web01".into(),
+            log: "/nonexistent".into(),
+        })
+        .collect();
+    app.tunnel_state.select(Some(0));
+
+    app.select_tunnel(333);
+    assert_eq!(app.selected_tunnel().unwrap().pid, 333);
+}
+
+#[test]
+fn a_new_mount_is_the_selected_one_once_it_exists() {
+    // The mount runs suspended, so it does not exist when the wizard hands the
+    // command over; the selection has to wait for the next refresh.
+    let mut app = App::empty();
+    app.view = View::Mounts;
+    app.new_mount = Some("/home/u/sshfs/raspi".into());
+    app.mounts = ["/home/u/sshfs/nas", "/home/u/sshfs/raspi"]
+        .iter()
+        .map(|local| mounts::Mount {
+            remote: "x:".into(),
+            local: (*local).into(),
+            options: "rw".into(),
+        })
+        .collect();
+    app.mount_state.select(Some(0));
+
+    app.settle_new_mount();
+    assert_eq!(app.selected_mount().unwrap().local, "/home/u/sshfs/raspi");
+    assert!(app.new_mount.is_none(), "the hint is used once");
+}
+
+#[test]
+fn jumping_to_a_view_drops_the_filter_that_led_there() {
+    // Otherwise a mount made from a filtered Hosts list lands on a Mounts tab
+    // whose filter can hide the very mount that was just made.
+    let mut app = App::empty();
+    app.query = "deploy".into();
+    app.goto_view(View::Mounts);
+    assert!(app.query.is_empty());
+    assert!(matches!(app.view, View::Mounts));
+}

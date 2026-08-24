@@ -301,8 +301,10 @@ impl App {
                     self.set_status(format!("mount: cannot create {local}: {e}"));
                     return None;
                 }
-                // Jump to the Mounts tab so the result (success or empty) is visible.
-                self.view = View::Mounts;
+                // Jump to the Mounts tab so the result (success or empty) is
+                // visible, and remember which one to land on once it exists.
+                self.goto_view(View::Mounts);
+                self.new_mount = Some(local.clone());
                 Some(PendingRun {
                     argv: spec.argv(),
                     label: format!("sshfs {host}: → {local}"),
@@ -343,14 +345,21 @@ impl App {
                 let spec = format!("{local}:localhost:{remote}");
                 match tunnels::open('L', &spec, &host) {
                     Ok(t) => {
-                        self.view = View::Tunnels;
+                        self.goto_view(View::Tunnels);
                         self.refresh_tunnels();
+                        self.select_tunnel(t.pid);
                         self.set_status(format!(
                             "localhost:{local} → {host}:{remote}  (pid {})",
                             t.pid
                         ));
                     }
-                    Err(e) => self.set_status(format!("forward failed: {e}")),
+                    // ssh refused it - usually the local port is already taken.
+                    // Leave the wizard open on the port that failed, so the fix
+                    // is editing one number rather than starting again.
+                    Err(e) => {
+                        self.set_status(format!("forward failed: {e}"));
+                        self.prompt = Some(prompt);
+                    }
                 }
                 None
             }
@@ -370,14 +379,18 @@ impl App {
                 let spec = format!("{remote}:localhost:{local}");
                 match tunnels::open('R', &spec, &host) {
                     Ok(t) => {
-                        self.view = View::Tunnels;
+                        self.goto_view(View::Tunnels);
                         self.refresh_tunnels();
+                        self.select_tunnel(t.pid);
                         self.set_status(format!(
                             "{host}:{remote} → localhost:{local}  (pid {})",
                             t.pid
                         ));
                     }
-                    Err(e) => self.set_status(format!("expose failed: {e}")),
+                    Err(e) => {
+                        self.set_status(format!("expose failed: {e}"));
+                        self.prompt = Some(prompt);
+                    }
                 }
                 None
             }

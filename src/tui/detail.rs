@@ -15,22 +15,19 @@ pub(super) const MIN_WIDTH_FOR_DETAIL: u16 = 96;
 /// The panel's share of the frame when it is shown.
 pub(super) const DETAIL_PCT: u16 = 38;
 
-/// Does this view have a detail panel, and is there room for it? A tunnel says
-/// everything it knows on its one line, so it keeps the width.
-pub(super) fn detail_fits(app: &App, width: u16) -> bool {
-    matches!(
-        app.view,
-        View::Hosts | View::Keys | View::Mounts | View::Settings
-    ) && width >= MIN_WIDTH_FOR_DETAIL
+/// Does this view have a detail panel, and is there room for it? Every view
+/// does; the width is what decides.
+pub(super) fn detail_fits(_app: &App, width: u16) -> bool {
+    width >= MIN_WIDTH_FOR_DETAIL
 }
 
 pub(super) fn render_detail(f: &mut Frame, area: Rect, app: &App) {
     let lines = match app.view {
         View::Hosts => host_lines(app),
         View::Keys => key_lines(app),
+        View::Tunnels => tunnel_lines(app),
         View::Mounts => mount_lines(app),
         View::Settings => setting_lines(app),
-        _ => Vec::new(),
     };
     let para = Paragraph::new(lines)
         .block(
@@ -162,6 +159,48 @@ fn key_lines(app: &App) -> Vec<Line<'static>> {
         true => row("Used by", "no host pins it (IdentityFile)".into()),
         false => row("Used by", k.used_by.join(", ")),
     });
+    lines
+}
+
+fn tunnel_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(t) = app.selected_tunnel() else {
+        return vec![Line::styled("nothing selected", dim())];
+    };
+    let mut lines = vec![
+        Line::styled(format!("-{} {}", t.kind, t.spec), heading()),
+        Line::raw(""),
+    ];
+
+    // What it is for, before what it is made of.
+    lines.push(Line::raw(t.explain()));
+    lines.push(Line::raw(""));
+
+    if let Some(reach) = app.reach.get(&t.host) {
+        lines.push(reach_line(Some(reach)));
+    }
+    lines.push(row("Host", t.host.clone()));
+    lines.push(row("Process", format!("pid {}", t.pid)));
+    if let Some(started) = t.started_at() {
+        // The log file is created as the tunnel is spawned, so its age is the
+        // tunnel's age.
+        let secs = started
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        lines.push(row("Opened", history::ago(secs, history::now())));
+    }
+
+    // A forward that half-died is otherwise silent: ssh's own words are the
+    // only explanation there is.
+    let stderr = t.stderr();
+    if !stderr.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(stderr, Style::default().fg(Color::Yellow)));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(t.command(), Style::default().fg(Color::Green)));
+    lines.push(Line::styled(format!("kill {}", t.pid), dim()));
     lines
 }
 
