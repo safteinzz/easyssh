@@ -525,12 +525,16 @@ fn mount_preview_matches_what_runs() {
         .position(|f| f.label.contains("mountpoint"))
         .unwrap();
     p.fields[idx].value = "~/exampledirectory".into();
+    // Same resolution as the run path, shown home-relative the way you would
+    // have typed it.
     assert_eq!(
         p.command_preview().unwrap(),
-        format!(
-            "sshfs raspi: {}",
-            mount_point("~/sshfs/raspi", "~/exampledirectory")
-        )
+        "sshfs raspi: ~/exampledirectory"
+    );
+    assert_eq!(
+        sshcfg::expand_tilde("~/exampledirectory").to_string_lossy(),
+        mount_point("~/sshfs/raspi", "~/exampledirectory"),
+        "and what actually runs is still the absolute path"
     );
 }
 

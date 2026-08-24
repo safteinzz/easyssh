@@ -282,9 +282,15 @@ impl Prompt {
             Action::Mount { host } => {
                 // Built from the same spec the run path uses, so the mountpoint
                 // and the sudo wrapping shown here are exactly what gets executed.
-                Some(shell_join(
-                    &MountSpec::from_fields(host, &self.fields).argv(),
-                ))
+                // The one difference is cosmetic: a path under home is shown the
+                // way you would type it, since a shell expands `~` itself and an
+                // absolute home path is unreadable in a box this wide.
+                let argv: Vec<String> = MountSpec::from_fields(host, &self.fields)
+                    .argv()
+                    .into_iter()
+                    .map(|a| sshcfg::collapse_tilde(&a))
+                    .collect();
+                Some(shell_join(&argv))
             }
             Action::Forward { host } => {
                 let remote = v(0);
