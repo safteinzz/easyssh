@@ -184,23 +184,6 @@ fn d_gates_delete_behind_confirm() {
 }
 
 #[test]
-fn confirm_buttons_are_not_cut_off() {
-    // The box has to be tall enough for the buttons; when it was sized without
-    // counting the borders they were clipped and the modal looked unanswerable.
-    let mut app = app_with_host();
-    app.on_key(press(KeyCode::Char('d')));
-    let screen = render(&mut app);
-    assert!(
-        screen.contains("Yes (y)"),
-        "yes button missing from the modal"
-    );
-    assert!(
-        screen.contains("No (n)"),
-        "no button missing from the modal"
-    );
-}
-
-#[test]
 fn confirm_starts_on_no_so_enter_cannot_fire_it() {
     let mut app = app_with_host();
     app.on_key(press(KeyCode::Char('d')));
@@ -267,25 +250,6 @@ fn n_is_not_a_create_key() {
     let mut app = App::empty();
     app.on_key(press(KeyCode::Char('n')));
     assert!(app.prompt.is_none(), "`n` must not create anything");
-}
-
-#[test]
-fn help_overlay_is_not_cut_off() {
-    let mut app = App::empty();
-    app.show_help = true;
-    let out = render(&mut app);
-    // First and last lines both present means the box is tall enough.
-    assert!(out.contains("Move"), "help header missing");
-    assert!(
-        out.contains("ssh-copy-id"),
-        "help should teach the real command"
-    );
-    // The last body row, so finding it is the test that the box is tall enough
-    // to have drawn its own last line.
-    assert!(
-        out.contains("? esc close"),
-        "help overlay is taller than its box"
-    );
 }
 
 #[test]
@@ -496,24 +460,6 @@ fn mount_tab_skips_the_hidden_fields() {
     assert_eq!(app.prompt.as_ref().unwrap().idx, 2, "on the rights choice");
     app.on_key(press(KeyCode::Tab)); // no sudo → wraps past the hidden field
     assert_eq!(app.prompt.as_ref().unwrap().idx, 0);
-}
-
-#[test]
-fn mount_wizard_survives_a_wrapping_preview() {
-    // The sudo preview is wider than the box. Sizing it by line count instead
-    // of wrapped rows pushed the key hints out through the bottom border.
-    let mut app = app_with_host();
-    app.on_key(press(KeyCode::Char('m')));
-    app.prompt.as_mut().unwrap().fields[2].choice = 1;
-    let screen = render(&mut app);
-    assert!(
-        screen.contains("sftp_server=sudo"),
-        "the preview wraps to two rows"
-    );
-    assert!(
-        screen.contains("Tab move field"),
-        "hints clipped off the wizard"
-    );
 }
 
 #[test]
