@@ -33,7 +33,7 @@ fn renders_chrome_and_wizards() {
     // The add-host wizard overlays its fields.
     app.prompt = Some(Prompt::add_host());
     let add = render(&mut app);
-    assert!(add.contains("Add host"), "add-host title missing");
+    assert!(add.contains("add host"), "add-host title missing");
     assert!(add.contains("Alias"), "alias field missing");
     app.prompt = None;
 
@@ -280,8 +280,10 @@ fn help_overlay_is_not_cut_off() {
         out.contains("ssh-copy-id"),
         "help should teach the real command"
     );
+    // The last body row, so finding it is the test that the box is tall enough
+    // to have drawn its own last line.
     assert!(
-        out.contains("press ? or Esc to close"),
+        out.contains("? esc close"),
         "help overlay is taller than its box"
     );
 }
@@ -499,7 +501,7 @@ fn mount_tab_skips_the_hidden_fields() {
 #[test]
 fn mount_wizard_survives_a_wrapping_preview() {
     // The sudo preview is wider than the box. Sizing it by line count instead
-    // of wrapped rows pushed the key hints out through the border.
+    // of wrapped rows pushed the key hints out through the bottom border.
     let mut app = app_with_host();
     app.on_key(press(KeyCode::Char('m')));
     app.prompt.as_mut().unwrap().fields[2].choice = 1;

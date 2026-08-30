@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
 /// The tabs. Order here is the left-to-right / Tab-cycle order.
+mod alert;
 mod confirm;
 mod connect;
 mod detail;
@@ -55,7 +56,10 @@ use mount_spec::{MountSpec, shell_join};
 use picker::Picker;
 use prompt::{Action, Field, Kind, Prompt, render_prompt};
 use render::ui;
-use widgets::{centered, empty, titled, wrapped_line_count};
+use widgets::{
+    box_area, box_block, box_buttons, box_height, box_hint, box_inner_width, box_width, empty,
+    titled, wrapped_line_count,
+};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum View {
@@ -110,6 +114,8 @@ pub(super) struct App {
     pub(super) prompt: Option<Prompt>,
     pub(super) picker: Option<Picker>,
     pub(super) confirm: Option<Confirm>,
+    /// A failure that has to be read. It owns every key until dismissed.
+    pub(super) alert: Option<alert::Alert>,
     pub(super) status: String,
     /// When `status` was set; it stops showing after `STATUS_TTL` so an old
     /// message never sits there looking like it is still current.
@@ -156,6 +162,7 @@ impl App {
             prompt: None,
             picker: None,
             confirm: None,
+            alert: None,
             status: String::new(),
             status_at: None,
             show_help: false,
@@ -573,12 +580,27 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 }
             }
 
-            let msg = match status {
-                Some(s) if s.success() => format!("{} ✓", run.label),
-                Some(s) => format!("{} failed (exit {})", run.label, s.code().unwrap_or(-1)),
-                None => format!("{}: could not run '{}'", run.label, run.argv[0]),
-            };
-            app.set_status(msg);
+            match status {
+                Some(s) if s.success() => app.set_status(format!("{} ✓", run.label)),
+                // It ran and came back non-zero: the program printed its own
+                // reason on the screen we then drew over, but the exit code on
+                // its own has nothing to explain, so it stays a status line.
+                Some(s) => app.set_status(format!(
+                    "{} failed (exit {})",
+                    run.label,
+                    s.code().unwrap_or(-1)
+                )),
+                // Nothing ran at all. This is the only account of why the
+                // screen came back unchanged, so it gets a box rather than a
+                // line that clears itself after STATUS_TTL.
+                None => app.alert(
+                    "could not run it",
+                    format!(
+                        "`{}` could not be started, so {} did not happen.\n\nCheck that it is installed and on your PATH.",
+                        run.argv[0], run.label
+                    ),
+                ),
+            }
             app.refresh_all();
             app.settle_new_mount();
         }

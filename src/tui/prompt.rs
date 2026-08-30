@@ -2,7 +2,7 @@
 //! through them, and how it draws.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use super::*;
 
@@ -113,7 +113,7 @@ impl Prompt {
 
     pub(super) fn add_host() -> Self {
         Self {
-            title: "Add host to ~/.ssh/config".into(),
+            title: "add host to ~/.ssh/config".into(),
             idx: 0,
             action: Action::AddHost,
             fields: vec![
@@ -130,7 +130,7 @@ impl Prompt {
     /// The add-host wizard, pre-filled with a host's current settings.
     pub(super) fn edit_host(h: &Host) -> Self {
         Self {
-            title: format!("Edit host '{}' in ~/.ssh/config", h.alias),
+            title: format!("edit host '{}' in ~/.ssh/config", h.alias),
             idx: 0,
             action: Action::EditHost {
                 original: h.alias.clone(),
@@ -157,7 +157,7 @@ impl Prompt {
 
     pub(super) fn new_key(kind: &str) -> Self {
         Self {
-            title: format!("Generate a new key (ssh-keygen -t {kind})"),
+            title: format!("generate a new key (ssh-keygen -t {kind})"),
             idx: 0,
             action: Action::NewKey {
                 kind: kind.to_string(),
@@ -174,7 +174,7 @@ impl Prompt {
     pub(super) fn mount(host: String, settings: &Settings) -> Self {
         let root = settings.mount_root.trim_end_matches('/');
         Self {
-            title: format!("Mount {host} on a local folder (sshfs)"),
+            title: format!("mount {host} on a local folder (sshfs)"),
             idx: 0,
             action: Action::Mount { host: host.clone() },
             fields: vec![
@@ -193,7 +193,7 @@ impl Prompt {
 
     pub(super) fn forward(host: String) -> Self {
         Self {
-            title: format!("Reach a service on {host} from this machine (ssh -L)"),
+            title: format!("reach a service on {host} from this machine (ssh -L)"),
             idx: 0,
             action: Action::Forward { host: host.clone() },
             fields: vec![
@@ -208,7 +208,7 @@ impl Prompt {
         let mut field = Field::filled(row.help, &row.value);
         field.default = row.default.clone();
         Self {
-            title: format!("Setting: {}", row.label),
+            title: format!("setting: {}", row.label),
             idx: 0,
             action: Action::EditSetting {
                 key: row.key.to_string(),
@@ -220,7 +220,7 @@ impl Prompt {
 
     pub(super) fn reverse(host: String) -> Self {
         Self {
-            title: format!("Expose a local port on {host} (ssh -R)"),
+            title: format!("expose a local port on {host} (ssh -R)"),
             idx: 0,
             action: Action::Reverse { host: host.clone() },
             fields: vec![
@@ -307,16 +307,15 @@ impl Prompt {
     }
 }
 
-/// Wizard box width, as the percentage of the area `centered` takes. The preview
-/// line can be far wider than the box (a sudo mount wraps to several rows), so
-/// the height has to be counted against the wrapped width, not the line count.
-pub(super) const PROMPT_PCT: u16 = 72;
-
+/// The wizard box. The preview line can be far wider than the box (a sudo mount
+/// wraps to several rows), so the height is counted against the wrapped width
+/// and never against the line count.
 pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
-    let mut lines: Vec<Line> = vec![Line::raw("")];
+    // No leading blank: the box's own top padding is that row.
+    let mut lines: Vec<Line> = Vec::new();
     // Plain text of every line, kept alongside so the box can be sized against
     // what the lines wrap to rather than how many there are.
-    let mut texts: Vec<String> = vec![String::new()];
+    let mut texts: Vec<String> = Vec::new();
     for (i, field) in p.fields.iter().enumerate() {
         // A field that does not apply to the answers so far is not drawn at all.
         if !p.visible(i) {
@@ -377,30 +376,25 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             Span::styled(cmd, Style::default().fg(Color::Green)),
         ]));
     }
-    let hint = "  Enter next/submit   Ctrl-j/k · Ctrl-↑↓ · Tab move field · Esc cancel";
+    let hint = "Enter next/submit · Ctrl-j/k · Ctrl-↑↓ · Tab move field · Esc cancel";
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        hint,
-        Style::default().add_modifier(Modifier::DIM),
-    )));
+    lines.push(box_hint(hint));
     texts.push(String::new());
     texts.push(hint.to_string());
 
-    // Size to the *wrapped* content: a sudo mount's preview is far wider than the
-    // box, and counting lines instead of rows pushed the hint out of the border.
-    let inner = (area.width * PROMPT_PCT / 100).saturating_sub(2) as usize;
-    let rows: usize = texts.iter().map(|t| wrapped_line_count(t, inner)).sum();
-    let height = ((rows + 2) as u16).min(area.height);
-    let rect = centered(area, PROMPT_PCT, height);
+    // Size to the *wrapped* content: a sudo mount's preview is far wider than
+    // the box, and counting lines instead of rows pushed the keys out through
+    // the bottom border.
+    let width = box_width(area.width);
+    let rows: usize = texts
+        .iter()
+        .map(|t| wrapped_line_count(t, box_inner_width(width)))
+        .sum();
+    let rect = box_area(area, width, box_height(rows as u16, area.height));
     f.render_widget(Clear, rect);
 
     let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", p.title))
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
+        .block(super::widgets::box_block(Color::Cyan, &p.title))
         .wrap(Wrap { trim: false });
     f.render_widget(para, rect);
 }

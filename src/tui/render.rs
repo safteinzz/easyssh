@@ -50,6 +50,10 @@ pub(super) fn ui(f: &mut Frame, app: &mut App) {
     if let Some(c) = &app.confirm {
         render_confirm(f, area, c);
     }
+    // Last, so a failure is never drawn under the thing that caused it.
+    if let Some(a) = &app.alert {
+        super::alert::render_alert(f, area, a);
+    }
 }
 
 pub(super) fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
@@ -375,20 +379,20 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub(super) fn render_help(f: &mut Frame, area: Rect) {
-    let rect = centered(area, 78, 30);
-    f.render_widget(Clear, rect);
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let lines = vec![
+    // Sized like every other box: the content plus the chrome, capped at four
+    // fifths of the screen. A hardcoded height clips the last rows the moment
+    // this pane grows a line.
+    let width = box_width(area.width);
+    let mut lines = vec![
         Line::from(Span::styled(
             "easyssh - one tool for ssh, keys, tunnels, mounts",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::raw(""),
-        Line::raw("Move      j/k or ↑↓ list     h/l or ←→ switch view     (Ctrl+ works too)"),
-        Line::raw("Global    / filter this list   ? help   q or Ctrl-c quit"),
+        Line::raw("Move      j/k or ↑↓ list · h/l or ←→ switch view · (Ctrl+ works too)"),
+        Line::raw("Global    / filter · ? help · q or Ctrl-c quit"),
         Line::raw(""),
-        Line::raw("Hosts     ↵ connect (ssh <host>)      c new / e edit / d delete"),
-        Line::raw("          y yank `ssh <host>` to the clipboard"),
+        Line::raw("Hosts     ↵ connect · c new / e edit / d delete · y yank `ssh <host>`"),
         Line::raw("          m mount a remote folder locally (sshfs host: ./dir)"),
         Line::raw("          t reach a remote port from here (ssh -L)"),
         Line::raw("          T expose a local port on the host (ssh -R)"),
@@ -396,8 +400,7 @@ pub(super) fn render_help(f: &mut Frame, area: Rect) {
         Line::raw("          r reload · ● up · ● down · ○ checking the ssh port"),
         Line::raw(""),
         Line::raw("Keys      c new key (ssh-keygen -t ed25519)"),
-        Line::raw("          y yank to a host (ssh-copy-id -i <key> <host>)"),
-        Line::raw("          Y yank the public key to the clipboard"),
+        Line::raw("          y yank to a host (ssh-copy-id) · Y yank the public key"),
         Line::raw("          agent = loaded in ssh-agent · passphrase = asks to unlock"),
         Line::raw("Tunnels   d kill it (ends the background ssh -N)    r refresh"),
         Line::raw("Mounts    d unmount (fusermount -u <dir>)           r refresh"),
@@ -406,16 +409,14 @@ pub(super) fn render_help(f: &mut Frame, area: Rect) {
         Line::raw("In a form  type to fill (h/j/k/l are text!)"),
         Line::raw("           Ctrl-j/k · Ctrl-↑↓ · Tab move between fields · Esc cancel"),
         Line::raw("           Ctrl-o picks a key (IdentityFile) or a host (ProxyJump)"),
-        Line::raw("           paste user@host:port in Alias and it fills the rest"),
-        Line::raw("           on a ‹ choice › field h/l or ←/→ pick the answer"),
+        Line::raw("           paste user@host:port in Alias to fill the rest"),
+        Line::raw("           on a ‹ choice › field, h/l or ←/→ pick the answer"),
         Line::raw("In a yes/no  y confirm · n or Esc cancel · ←/→ then Enter"),
-        Line::from(Span::styled("press ? or Esc to close", dim)),
     ];
-    let para = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" help ")
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
+    lines.push(Line::raw(""));
+    lines.push(super::widgets::box_hint("? esc close"));
+    let rect = box_area(area, width, box_height(lines.len() as u16, area.height));
+    f.render_widget(Clear, rect);
+    let para = Paragraph::new(lines).block(super::widgets::box_block(Color::Cyan, "help"));
     f.render_widget(para, rect);
 }

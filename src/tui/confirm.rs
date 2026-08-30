@@ -3,22 +3,27 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use super::*;
 
-/// A titled yes/no modal: confirm a destructive action, or offer a fix after
-/// something went wrong (a busy unmount, a changed host key).
+/// A titled yes/no modal, in two kinds that must not look alike: a **gate** in
+/// front of something you cannot undo, and an **offer** the app volunteers
+/// after something already failed.
 pub(crate) struct Confirm {
     pub(crate) title: String,
     pub(crate) message: String,
     pub(crate) action: ConfirmAction,
-    /// Which button is selected. Starts on No: these modals gate destructive or
-    /// forceful things, so a reflex Enter must never be the one that fires them.
+    /// A gate rather than an offer, which decides the colour: red when
+    /// something is about to be lost, cyan when the app is proposing a fix.
+    pub(crate) danger: bool,
+    /// Which button is selected.
     pub(crate) yes: bool,
 }
 
 impl Confirm {
+    /// A gate. Red, and it starts on **No**: it stands in front of something
+    /// destructive or forceful, so a reflex Enter must never be what fires it.
     pub(super) fn new(
         title: impl Into<String>,
         message: impl Into<String>,
@@ -28,7 +33,25 @@ impl Confirm {
             title: title.into(),
             message: message.into(),
             action,
+            danger: true,
             yes: false,
+        }
+    }
+
+    /// An offer. Cyan, and it starts on **Yes**: the client already failed and
+    /// this is the app proposing the next step, which you asked for by pressing
+    /// Enter in the first place. Nothing is lost by accepting it.
+    pub(super) fn offer(
+        title: impl Into<String>,
+        message: impl Into<String>,
+        action: ConfirmAction,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            message: message.into(),
+            action,
+            danger: false,
+            yes: true,
         }
     }
 }
@@ -46,59 +69,25 @@ pub(crate) enum ConfirmAction {
 }
 
 pub(super) fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
-    // Size the box to the wrapped message so short prompts stay small and long
-    // ones (a host-key warning) are not cut off. Padding gives every line, wrapped
-    // continuations included, a uniform margin instead of butting the border.
-    let width = (area.width * 66 / 100).clamp(34, 74);
-    let inner = width.saturating_sub(6) as usize; // borders (2) + horizontal padding (4)
-    let msg_rows = wrapped_line_count(&c.message, inner) as u16;
-    // borders (2) + vertical padding (2) + blank + buttons. Forgetting the borders
-    // here clipped the buttons off every modal, leaving no visible way to answer.
-    let height = (msg_rows + 6).min(area.height);
-
-    let rect = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
+    // A gate is red and starts on No; an offer is cyan and starts on Yes. The
+    // colour says how much is at stake, the default focus says what Enter does.
+    let accent = if c.danger { Color::Red } else { Color::Cyan };
+    let width = box_width(area.width);
+    let msg_rows = wrapped_line_count(&c.message, box_inner_width(width)) as u16;
+    // The message, a blank, and the button row.
+    // The message, a blank, the buttons, a blank, the keys.
+    let rect = box_area(area, width, box_height(msg_rows + 4, area.height));
     f.render_widget(Clear, rect);
 
-    // The selected button is highlighted, so the answer is visible at a glance
-    // rather than being a keystroke you had to know about.
-    let button = |label: &str, selected: bool| {
-        let style = if selected {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Red)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().add_modifier(Modifier::DIM)
-        };
-        Span::styled(format!(" {label} "), style)
-    };
-    let lines = vec![
+    let para = Paragraph::new(vec![
         Line::raw(c.message.clone()),
         Line::raw(""),
-        Line::from(vec![
-            button("Yes (y)", c.yes),
-            Span::raw("  "),
-            button("No (n)", !c.yes),
-            Span::styled(
-                "   ←/→ then Enter",
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-        ]),
-    ];
-    let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", c.title))
-                .border_style(Style::default().fg(Color::Red))
-                .padding(Padding::new(2, 2, 1, 1)),
-        )
-        .wrap(Wrap { trim: false });
+        box_buttons(accent, c.yes),
+        Line::raw(""),
+        box_hint("h/l ←/→ move · enter select · y/n"),
+    ])
+    .block(box_block(accent, &c.title))
+    .wrap(Wrap { trim: false });
     f.render_widget(para, rect);
 }
 
@@ -166,8 +155,8 @@ impl App {
 
     /// Show the "host key changed" modal offering the `ssh-keygen -R` fix.
     pub(super) fn offer_known_hosts_fix(&mut self, host: &str, target: String) {
-        self.confirm = Some(Confirm::new(
-            "WARNING: host key changed",
+        self.confirm = Some(Confirm::offer(
+            "host key changed",
             format!(
                 "{host}'s key no longer matches ~/.ssh/known_hosts. Usually the server was reinstalled or its IP was reused; rarely it is a man-in-the-middle. Only if you trust this change, drop the saved key (ssh-keygen -R {target}) and reconnect. Remove it now?"
             ),
