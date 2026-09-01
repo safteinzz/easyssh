@@ -18,6 +18,10 @@ pub(crate) struct Field {
     /// Only shown, and only reachable, while field `.0`'s choice is one of `.1`.
     /// Hidden fields keep their slot in the vec, so field indices stay stable.
     pub(crate) show_if: Option<(usize, Vec<usize>)>,
+    /// Marked with a red `*`, the form convention everyone already reads. Only
+    /// set it on a field the submit path actually refuses to go without, or the
+    /// star is a lie: everything unmarked can be left blank.
+    pub(crate) required: bool,
 }
 
 pub(crate) enum Kind {
@@ -36,6 +40,7 @@ impl Field {
             kind: Kind::Text,
             choice: 0,
             show_if: None,
+            required: false,
         }
     }
     /// A field that starts pre-filled with `value` - for the edit wizard.
@@ -52,6 +57,12 @@ impl Field {
             ..Self::new(label, "")
         }
     }
+    /// Builder: the submit path refuses a blank here, so it gets the red `*`.
+    pub(super) fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
     /// Builder: show this field only while field `on`'s choice is one of `values`.
     pub(super) fn shown_when(mut self, on: usize, values: &[usize]) -> Self {
         self.show_if = Some((on, values.to_vec()));
@@ -117,12 +128,13 @@ impl Prompt {
             idx: 0,
             action: Action::AddHost,
             fields: vec![
-                Field::new("Alias (what you type after ssh)", ""),
+                Field::new("Alias", "").required(),
                 Field::new("HostName (IP or DNS name)", ""),
                 Field::new("User", ""),
                 Field::new("Port", "22"),
-                Field::new("IdentityFile (Ctrl-o to pick a key, optional)", ""),
+                Field::new("IdentityFile (Ctrl-o to pick a key)", ""),
                 Field::new("ProxyJump (Ctrl-o to pick a host to hop through)", ""),
+                Field::new("RemoteCommand (run this instead of a shell, e.g. pwsh)", ""),
             ],
         }
     }
@@ -136,7 +148,7 @@ impl Prompt {
                 original: h.alias.clone(),
             },
             fields: vec![
-                Field::filled("Alias (what you type after ssh)", &h.alias),
+                Field::filled("Alias", &h.alias).required(),
                 Field::filled(
                     "HostName (IP or DNS name)",
                     h.hostname.as_deref().unwrap_or(""),
@@ -144,12 +156,16 @@ impl Prompt {
                 Field::filled("User", h.user.as_deref().unwrap_or("")),
                 Field::filled("Port", h.port.as_deref().unwrap_or("")),
                 Field::filled(
-                    "IdentityFile (Ctrl-o to pick a key, optional)",
+                    "IdentityFile (Ctrl-o to pick a key)",
                     h.identity.as_deref().unwrap_or(""),
                 ),
                 Field::filled(
                     "ProxyJump (Ctrl-o to pick a host to hop through)",
                     h.proxy_jump.as_deref().unwrap_or(""),
+                ),
+                Field::filled(
+                    "RemoteCommand (run this instead of a shell, e.g. pwsh)",
+                    h.remote_command.as_deref().unwrap_or(""),
                 ),
             ],
         }
@@ -323,10 +339,13 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
         }
         let active = i == p.idx;
         let head = if field.default.is_empty() {
-            format!("{}: ", field.label)
+            field.label.clone()
         } else {
-            format!("{} [{}]: ", field.label, field.default)
+            format!("{} [{}]", field.label, field.default)
         };
+        // Required-ness is a property of the field, not of where the cursor is,
+        // so the star keeps its colour while the label around it dims.
+        let star = if field.required { "*" } else { "" };
         let label_style = if active {
             Style::default()
                 .fg(Color::Cyan)
@@ -349,15 +368,18 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             (Style::default(), if active { "█" } else { "" })
         };
         texts.push(format!(
-            "{}{}{}{}",
+            "{}{}{}: {}{}",
             if active { "▸ " } else { "  " },
             head,
+            star,
             field.display(),
             tail
         ));
         lines.push(Line::from(vec![
             Span::raw(if active { "▸ " } else { "  " }),
             Span::styled(head, label_style),
+            Span::styled(star, Style::default().fg(Color::Red)),
+            Span::styled(": ", label_style),
             Span::styled(field.display(), value_style),
             Span::styled(
                 tail.to_string(),
@@ -376,11 +398,16 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             Span::styled(cmd, Style::default().fg(Color::Green)),
         ]));
     }
-    let hint = "Enter next/submit · Ctrl-j/k · Ctrl-↑↓ · Tab move field · Esc cancel";
+    let mut hint =
+        "Enter next/submit · Ctrl-j/k · Ctrl-↑↓ · Tab move field · Esc cancel".to_string();
+    if (0..p.fields.len()).any(|i| p.visible(i) && p.fields[i].required) {
+        hint.push_str(" · * required");
+    }
+    let hint = hint;
     lines.push(Line::raw(""));
-    lines.push(box_hint(hint));
+    lines.push(box_hint(&hint));
     texts.push(String::new());
-    texts.push(hint.to_string());
+    texts.push(hint.clone());
 
     // Size to the *wrapped* content: a sudo mount's preview is far wider than
     // the box, and counting lines instead of rows pushed the keys out through

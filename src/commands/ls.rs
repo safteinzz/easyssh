@@ -38,12 +38,19 @@ pub fn run(args: Args) {
                 Some(j) => format!("  via {j}"),
                 None => String::new(),
             };
+            // A RemoteCommand host does not give you a shell, so it belongs on
+            // the line beside where it connects.
+            let runs = match &h.remote_command {
+                Some(c) => format!("  runs {c}"),
+                None => String::new(),
+            };
             println!(
-                "  {:width$}  {}{}{}",
+                "  {:width$}  {}{}{}{}",
                 h.alias.bold(),
                 h.target().dimmed(),
                 via.dimmed(),
-                key.dimmed()
+                key.dimmed(),
+                runs.dimmed()
             );
         }
     } else {

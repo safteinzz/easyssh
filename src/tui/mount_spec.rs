@@ -75,6 +75,11 @@ impl MountSpec {
 
     pub(super) fn argv(&self) -> Vec<String> {
         let mut argv = vec!["sshfs".to_string()];
+        // sshfs forwards an unknown `-o` to ssh, and a host whose config sets a
+        // RemoteCommand would run that instead of the sftp server, failing with
+        // nothing readable. `scp` immunises itself the same way.
+        argv.push("-o".into());
+        argv.push("RemoteCommand=none".into());
         if let Some(opt) = self.sftp_server() {
             argv.push("-o".into());
             argv.push(opt);

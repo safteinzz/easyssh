@@ -157,6 +157,7 @@ fn app_with_host() -> App {
         port: None,
         identity: None,
         proxy_jump: None,
+        remote_command: None,
     }];
     app.host_state.select(Some(0));
     app
@@ -215,7 +216,7 @@ fn confirm_ignores_stray_keys() {
 }
 
 #[test]
-fn y_picks_a_host_instead_of_typing_one() {
+fn install_on_host_picks_one_instead_of_typing_it() {
     let mut app = app_with_host();
     app.keys = vec![keys::Key {
         path: "/home/u/.ssh/id_ed25519".into(),
@@ -230,13 +231,14 @@ fn y_picks_a_host_instead_of_typing_one() {
     app.key_state.select(Some(0));
     app.view = View::Keys;
 
-    // `y` = yank/copy (vim); `c` is create here, not copy, since vim's `c` is "change".
-    app.on_key(press(KeyCode::Char('y')));
+    // `Y` installs the key on a host; `y` is the clipboard copy, and `c` is
+    // create here, not copy, since vim's `c` is "change".
+    app.on_key(press(KeyCode::Char('Y')));
     let p = app.picker.as_ref().expect("host picker should open");
-    assert_eq!(
-        p.items,
-        vec!["raspi".to_string()],
-        "picker lists the config hosts"
+    assert_eq!(p.items.len(), 1, "picker lists the config hosts");
+    assert!(
+        p.items[0].starts_with("raspi"),
+        "the alias comes first, so it is what ssh-copy-id is handed"
     );
     assert!(
         app.prompt.is_none(),
@@ -357,7 +359,10 @@ fn mount_prompt(choice: usize) -> Prompt {
 fn mount_without_sudo_is_a_plain_sshfs() {
     let spec = MountSpec::from_fields("crusader", &mount_prompt(0).fields);
     let local = mount_point("~/sshfs/crusader", "");
-    assert_eq!(spec.argv(), vec!["sshfs", "crusader:", &local]);
+    assert_eq!(
+        spec.argv(),
+        vec!["sshfs", "-o", "RemoteCommand=none", "crusader:", &local]
+    );
 }
 
 #[test]
@@ -368,6 +373,8 @@ fn mount_with_nopasswd_sudo_wraps_the_server() {
         spec.argv(),
         vec![
             "sshfs",
+            "-o",
+            "RemoteCommand=none",
             "-o",
             "sftp_server=sudo /usr/lib/openssh/sftp-server",
             "crusader:",
@@ -477,7 +484,7 @@ fn mount_preview_matches_what_runs() {
     // have typed it.
     assert_eq!(
         p.command_preview().unwrap(),
-        "sshfs raspi: ~/exampledirectory"
+        "sshfs -o RemoteCommand=none raspi: ~/exampledirectory"
     );
     assert_eq!(
         sshcfg::expand_tilde("~/exampledirectory").to_string_lossy(),
@@ -506,6 +513,7 @@ fn slash_filters_the_list_and_esc_restores_it() {
             port: None,
             identity: None,
             proxy_jump: None,
+            remote_command: None,
         })
         .collect();
     app.host_state.select(Some(0));
@@ -538,6 +546,7 @@ fn a_filtered_selection_acts_on_the_row_you_can_see() {
             port: None,
             identity: None,
             proxy_jump: None,
+            remote_command: None,
         })
         .collect();
     app.host_state.select(Some(0));

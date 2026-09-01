@@ -68,6 +68,7 @@ fn host_lines(app: &App) -> Vec<Line<'static>> {
         ("Port", h.port.clone()),
         ("Key", h.identity.clone()),
         ("Via", h.proxy_jump.clone()),
+        ("Runs", h.remote_command.clone()),
     ] {
         if let Some(v) = value.filter(|v| !v.is_empty()) {
             lines.push(row(label, v));

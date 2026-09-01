@@ -24,6 +24,10 @@ pub struct Host {
     /// `ProxyJump`: the alias ssh hops through to reach this host, for boxes
     /// that are not routable from here.
     pub proxy_jump: Option<String>,
+    /// `RemoteCommand`: what runs instead of a login shell (`pwsh` on a Windows
+    /// box, `tmux a` on a workhorse). ssh refuses a command line on top of one,
+    /// so a host that sets this can only be connected to bare.
+    pub remote_command: Option<String>,
 }
 
 impl Host {
@@ -51,6 +55,7 @@ pub struct NewHost {
     pub port: String,
     pub identity: String,
     pub proxy_jump: String,
+    pub remote_command: String,
 }
 
 /// `~/.ssh`, honoring $HOME. Everything hangs off here.
@@ -117,6 +122,7 @@ fn merge_hosts(parsed: Vec<Host>) -> Vec<Host> {
             e.port = e.port.take().or(h.port);
             e.identity = e.identity.take().or(h.identity);
             e.proxy_jump = e.proxy_jump.take().or(h.proxy_jump);
+            e.remote_command = e.remote_command.take().or(h.remote_command);
         } else {
             merged.push(h);
         }
@@ -150,6 +156,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
     let mut port = None;
     let mut identity = None;
     let mut proxy_jump = None;
+    let mut remote_command = None;
 
     // Closure-free flush would need to borrow all the locals mutably; a small
     // helper macro keeps the loop readable without fighting the borrow checker.
@@ -165,6 +172,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
                     port: port.clone(),
                     identity: identity.clone(),
                     proxy_jump: proxy_jump.clone(),
+                    remote_command: remote_command.clone(),
                 });
             }
         };
@@ -189,6 +197,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
                 port = None;
                 identity = None;
                 proxy_jump = None;
+                remote_command = None;
                 aliases = value.split_whitespace().map(str::to_string).collect();
             }
             "include" => {
@@ -207,6 +216,9 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
             "port" => port = Some(value.to_string()),
             "identityfile" => identity = Some(value.to_string()),
             "proxyjump" => proxy_jump = Some(value.to_string()),
+            // The value runs to the end of the line, which `split_kv` already
+            // gives us: `RemoteCommand tmux a -t work` is one command, not four.
+            "remotecommand" => remote_command = Some(value.to_string()),
             _ => {}
         }
     }
@@ -334,6 +346,7 @@ fn add_host_in(cfg: &Path, h: &NewHost) -> Result<()> {
                 port: h.port.clone(),
                 identity: String::new(),
                 proxy_jump: h.proxy_jump.clone(),
+                remote_command: h.remote_command.clone(),
             };
             body.push('\n');
             body.push_str(&render_block(&per_host));
@@ -466,11 +479,18 @@ fn render_block_lines(h: &NewHost) -> Vec<String> {
         ("Port", &h.port),
         ("IdentityFile", &h.identity),
         ("ProxyJump", &h.proxy_jump),
+        ("RemoteCommand", &h.remote_command),
     ] {
         let val = val.trim();
         if !val.is_empty() {
             v.push(format!("    {key} {val}"));
         }
+    }
+    // A RemoteCommand runs without a terminal unless one is asked for, which
+    // gives a shell with no prompt, no line editing and no clear screen - so the
+    // two are always written together.
+    if !h.remote_command.trim().is_empty() {
+        v.push("    RequestTTY yes".to_string());
     }
     v
 }
@@ -775,6 +795,7 @@ Host alpha beta
             port: String::new(),
             identity: String::new(),
             proxy_jump: "bastion".into(),
+            remote_command: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
@@ -804,6 +825,7 @@ Host alpha beta
             port: "22".into(),
             identity: String::new(),
             proxy_jump: String::new(),
+            remote_command: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let hosts = parse_str(&fs::read_to_string(&cfg).unwrap());
@@ -826,6 +848,7 @@ Host alpha beta
             port: String::new(),
             identity: "~/.ssh/id_fleet".into(),
             proxy_jump: String::new(),
+            remote_command: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
@@ -860,6 +883,7 @@ Host alpha beta
             port: String::new(),
             identity: "~/.ssh/id_fleet".into(),
             proxy_jump: String::new(),
+            remote_command: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
@@ -903,6 +927,7 @@ Host alpha beta
             port: String::new(),
             identity: String::new(),
             proxy_jump: String::new(),
+            remote_command: String::new(),
         };
         update_host_in(&cfg, "a", &nh).unwrap();
         let hosts = parse_str(&fs::read_to_string(&cfg).unwrap());

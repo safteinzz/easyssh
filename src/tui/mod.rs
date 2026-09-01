@@ -81,8 +81,9 @@ const VIEWS: [View; 5] = [
 // The bottom bar is a terse reminder of this view's actions only; `?` opens the
 // full cheat-sheet (navigation keys and the real command behind each action), so
 // the bar stays short instead of restating everything and overflowing.
-const HOSTS_HINTS: &str = "↵ connect · c new · e edit · d del · y yank · m mount · t/T tunnel · r refresh · / find · ? help";
-const KEYS_HINTS: &str = "c new · y copy to host · Y yank pubkey · r refresh · / find · ? help";
+const HOSTS_HINTS: &str =
+    "↵ connect · c new · e edit · d del · m mount · t/T tunnel · r refresh · / find · ? help";
+const KEYS_HINTS: &str = "c new · y copy pubkey · Y install on host · r refresh · / find · ? help";
 const TUNNELS_HINTS: &str = "d kill · r refresh · / find · ? help";
 const MOUNTS_HINTS: &str = "d unmount · r refresh · / find · ? help";
 const SETTINGS_HINTS: &str = "↵ change · d back to default · r reload · ? help";

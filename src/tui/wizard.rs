@@ -212,6 +212,7 @@ impl App {
                     port,
                     identity: v[4].clone(),
                     proxy_jump: v[5].clone(),
+                    remote_command: v[6].clone(),
                 };
                 match sshcfg::add_host(&nh) {
                     Ok(_) => {
@@ -241,6 +242,7 @@ impl App {
                     port,
                     identity: v[4].clone(),
                     proxy_jump: v[5].clone(),
+                    remote_command: v[6].clone(),
                 };
                 match sshcfg::update_host(&original, &nh) {
                     Ok(_) => {

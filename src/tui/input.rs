@@ -235,17 +235,6 @@ impl App {
                 self.set_status(msg);
                 None
             }
-            // Yank the connect command, since the reason to leave the toolbox
-            // for a host is almost always to paste `ssh <alias>` somewhere else.
-            KeyCode::Char('y') => {
-                let alias = self.selected_host()?.alias.clone();
-                let cmd = format!("ssh {alias}");
-                self.set_status(match crate::clip::copy(&cmd) {
-                    Ok(tool) => format!("copied '{cmd}' to the clipboard ({tool})"),
-                    Err(e) => format!("clipboard: {e}"),
-                });
-                None
-            }
             KeyCode::Char('r') => {
                 self.refresh_hosts();
                 self.start_probes();
@@ -287,9 +276,10 @@ impl App {
                 });
                 None
             }
-            // Pick the host from the config list; never make the user retype an
-            // alias the app already knows.
-            KeyCode::Char('y') => {
+            // `Y` is the loud one: it writes on another machine. Pick the host
+            // from the config list; never make the user retype an alias the app
+            // already knows.
+            KeyCode::Char('Y') => {
                 let path = self.selected_key()?.path.clone();
                 if self.hosts.is_empty() {
                     self.set_status("no hosts in ~/.ssh/config to copy to");
@@ -299,19 +289,25 @@ impl App {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                // ssh-copy-id writes into the authorized_keys of whoever you log
+                // in as, so the login the alias resolves to is shown beside it:
+                // `admin@box` and `pi@box` are two different files.
+                let width = self.hosts.iter().map(|h| h.alias.len()).max().unwrap_or(0);
                 self.picker = Some(Picker {
-                    title: format!(
-                        "Copy '{name}.pub' into which host's authorized_keys? (ssh-copy-id)"
-                    ),
-                    items: self.hosts.iter().map(|h| h.alias.clone()).collect(),
+                    title: format!("Install '{name}.pub' in whose authorized_keys? (ssh-copy-id)"),
+                    items: self
+                        .hosts
+                        .iter()
+                        .map(|h| format!("{:width$}  {}", h.alias, h.target()))
+                        .collect(),
                     idx: 0,
                     action: PickerAction::CopyKeyTo { key: path },
                 });
                 None
             }
-            // `Y` is the same yank one level louder: the public key text itself,
-            // for the web form or the ticket that is asking for it.
-            KeyCode::Char('Y') => {
+            // `y` is the clipboard one, as everywhere else: the public key text
+            // itself, for the web form or the ticket asking for it.
+            KeyCode::Char('y') => {
                 let path = self.selected_key()?.path.clone();
                 let pubpath = path.with_extension("pub");
                 self.set_status(match fs::read_to_string(&pubpath) {

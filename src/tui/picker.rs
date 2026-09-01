@@ -120,16 +120,26 @@ impl App {
                 self.prompt = Some(Prompt::new_key(kind));
                 None
             }
-            PickerAction::CopyKeyTo { key } => Some(PendingRun {
-                argv: vec![
-                    "ssh-copy-id".into(),
-                    "-i".into(),
-                    key.to_string_lossy().into_owned(),
-                    choice.clone(),
-                ],
-                label: format!("ssh-copy-id -> {choice}"),
-                connect: None,
-            }),
+            PickerAction::CopyKeyTo { key } => {
+                // The row reads `alias  user@host`, for the eye only: an alias
+                // never contains whitespace, so the first token is the
+                // destination ssh-copy-id is handed.
+                let dest = choice
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&choice)
+                    .to_string();
+                Some(PendingRun {
+                    argv: vec![
+                        "ssh-copy-id".into(),
+                        "-i".into(),
+                        key.to_string_lossy().into_owned(),
+                        dest.clone(),
+                    ],
+                    label: format!("ssh-copy-id -> {dest}"),
+                    connect: None,
+                })
+            }
             PickerAction::FillField { field } => {
                 if let Some(f) = self.prompt.as_mut().and_then(|p| p.fields.get_mut(field)) {
                     f.value = choice;
