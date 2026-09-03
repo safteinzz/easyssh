@@ -333,25 +333,32 @@ impl App {
             }
 
             Action::Forward { host } => {
-                if v[0].is_empty() {
+                if v[2].is_empty() {
                     self.set_status("forward: a remote port is required");
                     self.prompt = Some(prompt);
                     return None;
                 }
-                let remote = v[0].clone();
-                let local = if v[1].is_empty() {
+                let Some(target) = tunnel_target(&v[1]) else {
+                    self.set_status(
+                        "forward: a remote host takes no `:` port - use the port field",
+                    );
+                    self.prompt = Some(prompt);
+                    return None;
+                };
+                let remote = v[2].clone();
+                let local = if v[0].is_empty() {
                     remote.clone()
                 } else {
-                    v[1].clone()
+                    v[0].clone()
                 };
-                let spec = format!("{local}:localhost:{remote}");
+                let spec = format!("{local}:{target}:{remote}");
                 match tunnels::open('L', &spec, &host) {
                     Ok(t) => {
                         self.goto_view(View::Tunnels);
                         self.refresh_tunnels();
                         self.select_tunnel(t.pid);
                         self.set_status(format!(
-                            "localhost:{local} → {host}:{remote}  (pid {})",
+                            "localhost:{local} → {target}:{remote} via {host}  (pid {})",
                             t.pid
                         ));
                     }
@@ -367,25 +374,30 @@ impl App {
             }
 
             Action::Reverse { host } => {
-                if v[0].is_empty() {
+                if v[2].is_empty() {
                     self.set_status("expose: a local port is required");
                     self.prompt = Some(prompt);
                     return None;
                 }
-                let local = v[0].clone();
-                let remote = if v[1].is_empty() {
+                let Some(target) = tunnel_target(&v[1]) else {
+                    self.set_status("expose: a local host takes no `:` port - use the port field");
+                    self.prompt = Some(prompt);
+                    return None;
+                };
+                let local = v[2].clone();
+                let remote = if v[0].is_empty() {
                     local.clone()
                 } else {
-                    v[1].clone()
+                    v[0].clone()
                 };
-                let spec = format!("{remote}:localhost:{local}");
+                let spec = format!("{remote}:{target}:{local}");
                 match tunnels::open('R', &spec, &host) {
                     Ok(t) => {
                         self.goto_view(View::Tunnels);
                         self.refresh_tunnels();
                         self.select_tunnel(t.pid);
                         self.set_status(format!(
-                            "{host}:{remote} → localhost:{local}  (pid {})",
+                            "{host}:{remote} → {target}:{local}  (pid {})",
                             t.pid
                         ));
                     }
@@ -398,4 +410,20 @@ impl App {
             }
         }
     }
+}
+
+/// The middle field of a `-L`/`-R` spec: the host the far side (or this side)
+/// resolves, blank meaning `localhost`. A spec is three colon-separated fields,
+/// so a `host:port` pasted in here would silently make it four and `Tunnel::ports`
+/// would stop being able to read back what we wrote; catch it and say so
+/// instead of letting ssh answer for us.
+fn tunnel_target(typed: &str) -> Option<String> {
+    let t = typed.trim();
+    if t.is_empty() {
+        return Some("localhost".into());
+    }
+    if t.contains(':') {
+        return None;
+    }
+    Some(t.to_string())
 }

@@ -223,12 +223,22 @@ impl App {
     /// most likely reaching for, and it should not be a scroll away - unless you
     /// asked for plain alphabetical in Settings.
     pub(super) fn sort_hosts(&mut self) {
+        // A jumped host is a route rather than a machine you sit on - a repo to
+        // clone through your laptop, a box behind a bastion - and there are
+        // usually more of them than there are hosts you actually open. They sit
+        // as one block under the direct ones, in whichever order is chosen, so
+        // the list you scan first is the list you connect from.
         match self.settings.host_order {
             HostOrder::Recent => {
                 let history = &self.history;
-                self.hosts.sort_by_key(|h| history.rank(&h.alias));
+                self.hosts
+                    .sort_by_key(|h| (h.jumped(), history.rank(&h.alias)));
             }
-            HostOrder::Alpha => self.hosts.sort_by(|a, b| a.alias.cmp(&b.alias)),
+            HostOrder::Alpha => self.hosts.sort_by(|a, b| {
+                a.jumped()
+                    .cmp(&b.jumped())
+                    .then_with(|| a.alias.cmp(&b.alias))
+            }),
         }
     }
 
@@ -265,16 +275,24 @@ impl App {
             self.reach.clear();
             return;
         }
-        let targets: Vec<reach::Target> = self
-            .hosts
-            .iter()
-            .map(|h| reach::Target {
-                alias: h.alias.clone(),
-                host: h.hostname.clone().unwrap_or_else(|| h.alias.clone()),
-                // A config without a Port means ssh's default, which is 22.
-                port: h.port.as_deref().and_then(|p| p.parse().ok()).unwrap_or(22),
-            })
-            .collect();
+        // What each host makes this machine dial: itself, or the first hop of
+        // its jump chain, since that is the only end of a route we can ask
+        // about from here. A route we cannot resolve is not guessed at.
+        let mut targets = Vec::new();
+        let mut unknown = Vec::new();
+        for h in &self.hosts {
+            match sshcfg::first_hop(h, &self.hosts) {
+                Some((host, port)) => targets.push(reach::Target {
+                    alias: h.alias.clone(),
+                    host,
+                    port,
+                }),
+                None => unknown.push(h.alias.clone()),
+            }
+        }
+        for alias in unknown {
+            self.reach.insert(alias, Reach::Indirect);
+        }
         for t in &targets {
             self.reach.insert(t.alias.clone(), Reach::Probing);
         }
@@ -603,6 +621,12 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 ),
             }
             app.refresh_all();
+            // We had the terminal taken off us, so every dot on the list is
+            // now a guess about a world we stopped watching: the box you just
+            // logged into is provably up, and the one you were fixing on
+            // another machine may have come back. Re-probe rather than leave a
+            // red dot that only `r` can talk out of being wrong.
+            app.start_probes();
             app.settle_new_mount();
         }
     }

@@ -361,7 +361,13 @@ fn mount_without_sudo_is_a_plain_sshfs() {
     let local = mount_point("~/sshfs/crusader", "");
     assert_eq!(
         spec.argv(),
-        vec!["sshfs", "-o", "RemoteCommand=none", "crusader:", &local]
+        vec![
+            "sshfs",
+            "-o",
+            "ssh_command=ssh -o RemoteCommand=none",
+            "crusader:",
+            &local,
+        ]
     );
 }
 
@@ -374,7 +380,7 @@ fn mount_with_nopasswd_sudo_wraps_the_server() {
         vec![
             "sshfs",
             "-o",
-            "RemoteCommand=none",
+            "ssh_command=ssh -o RemoteCommand=none",
             "-o",
             "sftp_server=sudo /usr/lib/openssh/sftp-server",
             "crusader:",
@@ -469,6 +475,56 @@ fn mount_tab_skips_the_hidden_fields() {
     assert_eq!(app.prompt.as_ref().unwrap().idx, 0);
 }
 
+/// Set a wizard field by its label, so these tests describe what was typed
+/// rather than which row it happened to be on.
+fn fill(p: &mut Prompt, label: &str, value: &str) {
+    let i = p.fields.iter().position(|f| f.label == label).unwrap();
+    p.fields[i].value = value.into();
+}
+
+#[test]
+fn a_forward_can_reach_past_the_host_it_goes_through() {
+    // The middle of a `-L` spec is resolved on the far side, so a forward is
+    // not limited to services on the host itself.
+    let mut p = Prompt::forward("jumpbox".into());
+    fill(&mut p, "Local port", "8443");
+    fill(&mut p, "Remote host", "gitlab.example.com");
+    fill(&mut p, "Remote port", "443");
+    assert_eq!(
+        p.command_preview().unwrap(),
+        "ssh -N -L 8443:gitlab.example.com:443 jumpbox"
+    );
+
+    // Blank remote host is the host itself, and a blank local port is the
+    // remote one - both of which the placeholders promise.
+    let mut p = Prompt::forward("raspi".into());
+    fill(&mut p, "Remote port", "5432");
+    assert_eq!(
+        p.command_preview().unwrap(),
+        "ssh -N -L 5432:localhost:5432 raspi"
+    );
+}
+
+#[test]
+fn a_reverse_can_expose_something_that_is_not_this_machine() {
+    // The mirror: the middle of a `-R` spec is resolved here.
+    let mut p = Prompt::reverse("raspi".into());
+    fill(&mut p, "Remote port", "9000");
+    fill(&mut p, "Local host", "printer.lan");
+    fill(&mut p, "Local port", "631");
+    assert_eq!(
+        p.command_preview().unwrap(),
+        "ssh -N -R 9000:printer.lan:631 raspi"
+    );
+
+    let mut p = Prompt::reverse("raspi".into());
+    fill(&mut p, "Local port", "3000");
+    assert_eq!(
+        p.command_preview().unwrap(),
+        "ssh -N -R 3000:localhost:3000 raspi"
+    );
+}
+
 #[test]
 fn mount_preview_matches_what_runs() {
     // The preview must resolve the mountpoint exactly like the run path, so it
@@ -484,7 +540,7 @@ fn mount_preview_matches_what_runs() {
     // have typed it.
     assert_eq!(
         p.command_preview().unwrap(),
-        "sshfs -o RemoteCommand=none raspi: ~/exampledirectory"
+        "sshfs -o \"ssh_command=ssh -o RemoteCommand=none\" raspi: ~/exampledirectory"
     );
     assert_eq!(
         sshcfg::expand_tilde("~/exampledirectory").to_string_lossy(),

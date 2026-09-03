@@ -234,9 +234,17 @@ impl Prompt {
             title: format!("reach a service on {host} from this machine (ssh -L)"),
             idx: 0,
             action: Action::Forward { host: host.clone() },
+            // In the order ssh writes them, so the form reads as the `-L` spec
+            // in the preview underneath it rather than as its mirror.
             fields: vec![
-                Field::new("Remote port", "").hint(&format!("the service on {host}")),
                 Field::new("Local port", "= remote").hint("where you'll reach it"),
+                // The service does not have to live on the host itself: the
+                // middle of a `-L` spec is resolved over there, so anything
+                // that box can reach is reachable from here through it.
+                Field::new("Remote host", "localhost").hint(&format!("or a box {host} can reach")),
+                Field::new("Remote port", "")
+                    .hint("the service's port")
+                    .required(),
             ],
         }
     }
@@ -261,9 +269,16 @@ impl Prompt {
             title: format!("expose a local port on {host} (ssh -R)"),
             idx: 0,
             action: Action::Reverse { host: host.clone() },
+            // In the order ssh writes them, as the forward's are.
             fields: vec![
-                Field::new("Local port", "").hint("yours to expose"),
                 Field::new("Remote port", "= local").hint(&format!("opened on {host}")),
+                // The mirror of the forward's remote host: the middle of a `-R`
+                // spec is resolved here, so you can hand the far side something
+                // on your LAN and not only something of your own.
+                Field::new("Local host", "localhost").hint("or a box this machine can reach"),
+                Field::new("Local port", "")
+                    .hint("the service's port")
+                    .required(),
             ],
         }
     }
@@ -277,6 +292,14 @@ impl Prompt {
         match &self.action {
             Action::AddHost | Action::EditHost { .. } => {
                 "ctrl-o fills IdentityFile or ProxyJump from what this machine already has"
+            }
+            // Which side a name is looked up on is the one thing about a
+            // forward that is not guessable, and it stays true once typed.
+            Action::Forward { .. } => {
+                "the remote host is resolved over there, so localhost is the host itself"
+            }
+            Action::Reverse { .. } => {
+                "the local host is resolved here, so localhost is this machine"
             }
             _ => "",
         }
@@ -345,14 +368,16 @@ impl Prompt {
                 Some(shell_join(&argv))
             }
             Action::Forward { host } => {
-                let remote = v(0);
-                let local = if v(1).is_empty() { remote } else { v(1) };
-                Some(format!("ssh -N -L {local}:localhost:{remote} {host}"))
+                let target = if v(1).is_empty() { "localhost" } else { v(1) };
+                let remote = v(2);
+                let local = if v(0).is_empty() { remote } else { v(0) };
+                Some(format!("ssh -N -L {local}:{target}:{remote} {host}"))
             }
             Action::Reverse { host } => {
-                let local = v(0);
-                let remote = if v(1).is_empty() { local } else { v(1) };
-                Some(format!("ssh -N -R {remote}:localhost:{local} {host}"))
+                let target = if v(1).is_empty() { "localhost" } else { v(1) };
+                let local = v(2);
+                let remote = if v(0).is_empty() { local } else { v(0) };
+                Some(format!("ssh -N -R {remote}:{target}:{local} {host}"))
             }
             Action::AddHost | Action::EditHost { .. } | Action::EditSetting { .. } => None,
         }

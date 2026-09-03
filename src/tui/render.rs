@@ -115,7 +115,7 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                 .iter()
                 .map(|&i| {
                     let h = &app.hosts[i];
-                    let (mark, style) = reach_mark(app.reach.get(&h.alias));
+                    let (mark, style) = reach_mark(app.reach.get(&h.alias), h.jumped());
                     let age = match app.history.get(&h.alias) {
                         Some(e) => history::ago(e.last, now),
                         None => String::new(),
@@ -316,11 +316,19 @@ fn counted(name: &str, shown: usize, total: usize) -> Block<'static> {
 }
 
 /// The dot in front of a host: filled and coloured once we know, hollow while
-/// we are still asking.
-fn reach_mark(reach: Option<&Reach>) -> (&'static str, Style) {
+/// we are still asking. A jumped host wears a diamond instead, because the
+/// answer is about its first hop and not about the host itself - the colour is
+/// the same question, asked one machine away. Filled, not hollow: a thin
+/// outline at terminal sizes reads as white whatever colour it is drawn in,
+/// and the colour is the whole point of the mark.
+fn reach_mark(reach: Option<&Reach>, jumped: bool) -> (&'static str, Style) {
+    let known = if jumped { "◆" } else { "●" };
     match reach {
-        Some(Reach::Up(_)) => ("●", Style::default().fg(Color::Green)),
-        Some(Reach::Down) => ("●", Style::default().fg(Color::Red)),
+        Some(Reach::Up(_)) => (known, Style::default().fg(Color::Green)),
+        Some(Reach::Down) => (known, Style::default().fg(Color::Red)),
+        // Nothing was asked, so nothing is claimed: a mark that is neither
+        // filled nor the hollow one a probe in flight wears.
+        Some(Reach::Indirect) => ("·", Style::default().add_modifier(Modifier::DIM)),
         _ => ("○", Style::default().add_modifier(Modifier::DIM)),
     }
 }

@@ -26,6 +26,11 @@ pub enum Reach {
     Up(u64),
     /// Refused, unroutable, unresolvable or slower than `TIMEOUT`.
     Down,
+    /// Never asked: the host is reached through a `ProxyJump`, so its address is
+    /// resolved on the jump host and a connect from here would be answering a
+    /// question nobody asked. Only a login can tell you about one of these, and
+    /// a login is not something a listing gets to do behind your back.
+    Indirect,
 }
 
 /// One probe's answer, tagged with the round that asked for it.

@@ -99,6 +99,9 @@ Type "15432"
 Enter
 Sleep 300ms
 Enter
+Sleep 300ms
+Type "5432"
+Enter
 Sleep 3s
 Show
 Sleep 500ms

@@ -185,6 +185,18 @@ time.sleep(86400)
 " > /dev/null 2>&1 &
     echo $! >> "$PIDS"
   done
+  # The demo tape opens a forward on 5432 and shows ssh refusing it, so the rig
+  # is what makes that true: without a listener here the beat only happens on a
+  # machine that already runs postgres, which is the opposite of reproducible.
+  # A bind that fails because the port really is taken is the same picture.
+  python3 -c "
+import socket, time
+s = socket.socket()
+s.bind(('127.0.0.1', 5432))
+s.listen(16)
+time.sleep(86400)
+" > /dev/null 2>&1 &
+  echo $! >> "$PIDS"
 }
 
 seed_history() {

@@ -18,7 +18,7 @@ pub fn run(args: Args) {
     if hosts.is_empty() {
         println!(
             "{}",
-            "No hosts in ~/.ssh/config yet. Run `essh` and press `n` to add one.".dimmed()
+            "No hosts in ~/.ssh/config yet. Run `essh` and press `c` to add one.".dimmed()
         );
         return;
     }

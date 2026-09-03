@@ -47,7 +47,7 @@ fn host_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(h.alias.clone(), heading()), Line::raw("")];
 
     // State first: the two things that decide whether you press Enter at all.
-    lines.push(reach_line(app.reach.get(&h.alias)));
+    lines.push(reach_line(app.reach.get(&h.alias), h.proxy_jump.as_deref()));
     lines.push(match app.history.get(&h.alias) {
         Some(e) => Line::styled(
             format!(
@@ -177,7 +177,7 @@ fn tunnel_lines(app: &App) -> Vec<Line<'static>> {
     lines.push(Line::raw(""));
 
     if let Some(reach) = app.reach.get(&t.host) {
-        lines.push(reach_line(Some(reach)));
+        lines.push(reach_line(Some(reach), jump_of(app, &t.host)));
     }
     lines.push(row("Host", t.host.clone()));
     lines.push(row("Process", format!("pid {}", t.pid)));
@@ -215,7 +215,7 @@ fn mount_lines(app: &App) -> Vec<Line<'static>> {
     // first thing that explains a directory that has gone unresponsive. We only
     // know it for a host that is also in the config and has been probed.
     if let Some(reach) = app.reach.get(m.host()) {
-        lines.push(reach_line(Some(reach)));
+        lines.push(reach_line(Some(reach), jump_of(app, m.host())));
         lines.push(Line::raw(""));
     }
 
@@ -301,7 +301,34 @@ fn label(name: &str) -> Span<'static> {
     Span::styled(format!("{name:<8} "), dim())
 }
 
-fn reach_line(reach: Option<&Reach>) -> Line<'static> {
+/// The jump an alias goes through, for a reach line that has only the name.
+fn jump_of<'a>(app: &'a App, alias: &str) -> Option<&'a str> {
+    let h = app.hosts.iter().find(|h| h.alias == alias)?;
+    h.proxy_jump.as_deref().filter(|_| h.jumped())
+}
+
+/// What we know about getting to a host. With a jump, every word is about the
+/// jump: it is the only end of the route this machine can ask about, and a line
+/// that said "up" would be claiming an answer nobody has.
+fn reach_line(reach: Option<&Reach>, via: Option<&str>) -> Line<'static> {
+    if let Some(via) = via.filter(|v| !v.trim().is_empty() && v.trim() != "none") {
+        let via = via.trim().to_string();
+        return match reach {
+            Some(Reach::Up(_)) => Line::styled(
+                format!("◆ the jump {via} answered · this host is not checked from here"),
+                Style::default().fg(Color::Green),
+            ),
+            Some(Reach::Down) => Line::styled(
+                format!("◆ the jump {via} is down · nothing here can reach this host"),
+                Style::default().fg(Color::Red),
+            ),
+            Some(Reach::Probing) => Line::styled(format!("○ checking the jump {via}…"), dim()),
+            _ => Line::styled(
+                format!("· reached through {via} · not checked from here"),
+                dim(),
+            ),
+        };
+    }
     match reach {
         // A loopback or LAN answer rounds to zero, and "answered in 0 ms" reads
         // like a missing number rather than a fast one.
@@ -317,6 +344,7 @@ fn reach_line(reach: Option<&Reach>) -> Line<'static> {
             "● down · nothing listening on the ssh port",
             Style::default().fg(Color::Red),
         ),
+        Some(Reach::Indirect) => Line::styled("· not checked from here", dim()),
         Some(Reach::Probing) => Line::styled("○ checking the ssh port…", dim()),
         None => Line::styled("○ not checked (r to check)", dim()),
     }

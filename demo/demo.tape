@@ -106,26 +106,43 @@ Down
 Sleep 1.5s
 Type "h"
 Sleep 700ms
-Down
-Sleep 250ms
-Down
+
+# Back to raspi by name rather than by counting rows: the Hosts list is ordered
+# by when you last connected, and jumped hosts sit under the direct ones, so no
+# row is ever at a fixed height.
+Type "/"
+Sleep 300ms
+Type "raspi"
+Sleep 900ms
+Enter
 Sleep 800ms
 
+# The form is the `-L` spec in the order ssh writes it: the port opened here,
+# the host the far side resolves, the port over there.
 Type "t"
 Sleep 1.5s
 Type "5432"
-Sleep 1.2s
+Sleep 1s
 Enter
-Sleep 400ms
+Sleep 500ms
+Enter
+Sleep 500ms
+Type "5432"
+Sleep 1.2s
 Enter
 Sleep 3s
 
 # 5432 is taken on this machine, so ssh refuses the forward and essh says so
-# instead of listing a tunnel that carries nothing. The wizard stays open on the
-# port that failed, still on the local-port field - which is the one that was
-# busy - so the fix is typing a free one.
+# instead of listing a tunnel that carries nothing. The wizard stays open with
+# what was typed, and Tab comes back round to the local port - the one that was
+# busy - so the fix is one number.
+Tab
+Sleep 700ms
+Backspace 4
 Type "15432"
 Sleep 1.2s
+Enter
+Sleep 400ms
 Enter
 Sleep 400ms
 Enter

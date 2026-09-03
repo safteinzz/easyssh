@@ -44,6 +44,46 @@ impl Host {
         }
         s
     }
+
+    /// Whether ssh gets to this host through another one. `ProxyJump none` is
+    /// how a config cancels a jump inherited from a wildcard block, so it is a
+    /// direct host that happens to say so out loud.
+    pub fn jumped(&self) -> bool {
+        matches!(&self.proxy_jump, Some(j) if !j.trim().is_empty() && j.trim() != "none")
+    }
+}
+
+/// The machine this host makes ssh open a socket to *from here*: itself, or the
+/// first hop of its `ProxyJump` chain, with the port ssh would use. `None` when
+/// the config alone cannot say (a jump that is itself jumped, or an alias this
+/// config does not define), which is the only honest answer for a route we
+/// would otherwise probe at the wrong end.
+pub fn first_hop(host: &Host, all: &[Host]) -> Option<(String, u16)> {
+    let addr = |h: &Host| {
+        (
+            h.hostname.clone().unwrap_or_else(|| h.alias.clone()),
+            h.port.as_deref().and_then(|p| p.parse().ok()).unwrap_or(22),
+        )
+    };
+    if !host.jumped() {
+        return Some(addr(host));
+    }
+    // ssh walks a `ProxyJump a,b` chain left to right, so the first entry is
+    // the only machine this one ever talks to directly.
+    let hop = host.proxy_jump.as_deref()?.split(',').next()?.trim();
+    if hop.is_empty() {
+        return None;
+    }
+    // A jump written out as a destination carries its own address; a bare word
+    // is an alias, and has to be found in the config to mean anything.
+    if let Some(t) = parse_target(hop) {
+        return Some((t.hostname, t.port.parse().unwrap_or(22)));
+    }
+    let h = all.iter().find(|h| h.alias == hop)?;
+    if h.jumped() {
+        return None;
+    }
+    Some(addr(h))
 }
 
 /// Fields the add-host wizard collects. Empty strings mean "not set" and are
@@ -666,6 +706,49 @@ mod tests {
         let mut v = Vec::new();
         parse_lines(text, false, &mut v);
         v
+    }
+
+    #[test]
+    fn a_jump_is_the_socket_this_machine_actually_opens() {
+        // A jumped host's own address is resolved on the jump, so the only end
+        // of the route this machine can ask about is the first hop.
+        let hosts = parse_str(
+            "Host bastion\n  HostName 203.0.113.9\n  Port 2222\n\
+             Host db\n  HostName 10.0.0.5\n  ProxyJump bastion\n\
+             Host repo\n  HostName git.example.com\n  ProxyJump laptop:2022\n\
+             Host deep\n  HostName 10.0.0.6\n  ProxyJump db\n\
+             Host plain\n  HostName 198.51.100.7\n",
+        );
+        let of = |alias: &str| {
+            let h = hosts.iter().find(|h| h.alias == alias).unwrap();
+            first_hop(h, &hosts)
+        };
+        // No jump: the host itself, and ssh's default port when none is set.
+        assert_eq!(of("plain"), Some(("198.51.100.7".into(), 22)));
+        // An alias jump carries the jump's own HostName and Port.
+        assert_eq!(of("db"), Some(("203.0.113.9".into(), 2222)));
+        // A jump written out as a destination needs no config entry at all.
+        assert_eq!(of("repo"), Some(("laptop".into(), 2022)));
+        // A jump that is itself jumped puts the first socket somewhere we have
+        // not resolved, so nothing is claimed rather than probing the wrong end.
+        assert_eq!(of("deep"), None);
+    }
+
+    #[test]
+    fn proxyjump_none_is_a_direct_host() {
+        // `ProxyJump none` is how a config cancels a jump inherited from a
+        // wildcard block; reading it as a jump would send the probe nowhere.
+        let hosts = parse_str(
+            "Host cancelled\n  HostName 198.51.100.8\n  ProxyJump none\n\
+             Host jumped\n  HostName 10.0.0.9\n  ProxyJump bastion\n",
+        );
+        let h = |alias: &str| hosts.iter().find(|h| h.alias == alias).unwrap();
+        assert!(!h("cancelled").jumped());
+        assert_eq!(
+            first_hop(h("cancelled"), &hosts),
+            Some(("198.51.100.8".into(), 22))
+        );
+        assert!(h("jumped").jumped());
     }
 
     /// A throwaway config file under the temp dir, uniquely named per test.
