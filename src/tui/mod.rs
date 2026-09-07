@@ -84,12 +84,13 @@ const VIEWS: [View; 5] = [
 const HOSTS_HINTS: &str =
     "↵ connect · c new · e edit · d del · m mount · t/T tunnel · r refresh · / find · ? help";
 const KEYS_HINTS: &str = "c new · y copy pubkey · Y install on host · r refresh · / find · ? help";
-const TUNNELS_HINTS: &str = "d kill · r refresh · / find · ? help";
+const TUNNELS_HINTS: &str =
+    "↵ on/off · c new · e edit · d stop, del when off · r refresh · / find · ? help";
 const MOUNTS_HINTS: &str = "d unmount · r refresh · / find · ? help";
 const SETTINGS_HINTS: &str = "↵ change · d back to default · r reload · ? help";
 
 /// How long a status message stays on screen before the hints return.
-const STATUS_TTL: Duration = Duration::from_millis(1500);
+const STATUS_TTL: Duration = Duration::from_secs(3);
 
 /// An external command the event loop must run *suspended* (outside the TUI) so
 /// it can own the terminal - connect, keygen, copy-id, mount.
@@ -106,7 +107,7 @@ pub(super) struct App {
     pub(super) view: View,
     pub(super) hosts: Vec<Host>,
     pub(super) keys: Vec<keys::Key>,
-    pub(super) tunnels: Vec<tunnels::Tunnel>,
+    pub(super) tunnels: Vec<tunnels::Entry>,
     pub(super) mounts: Vec<mounts::Mount>,
     pub(super) host_state: ListState,
     pub(super) key_state: ListState,
@@ -118,6 +119,9 @@ pub(super) struct App {
     /// A failure that has to be read. It owns every key until dismissed.
     pub(super) alert: Option<alert::Alert>,
     pub(super) status: String,
+    /// Whether the message on screen is a failure, which is all that decides
+    /// its colour.
+    pub(super) status_failed: bool,
     /// When `status` was set; it stops showing after `STATUS_TTL` so an old
     /// message never sits there looking like it is still current.
     pub(super) status_at: Option<Instant>,
@@ -165,6 +169,7 @@ impl App {
             confirm: None,
             alert: None,
             status: String::new(),
+            status_failed: false,
             status_at: None,
             show_help: false,
             should_quit: false,
@@ -185,6 +190,26 @@ impl App {
     pub(super) fn set_status(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
         self.status_at = Some(Instant::now());
+        self.status_failed = false;
+    }
+
+    /// The same line for something that did not work. Yellow, the same yellow
+    /// an alert uses: red is reserved for a gate in front of something about to
+    /// be lost, and this has already happened. A failure worth acting on is an
+    /// alert box instead; this is for the ones with nothing to do about them.
+    pub(super) fn set_failed(&mut self, msg: impl Into<String>) {
+        self.set_status(msg);
+        self.status_failed = true;
+    }
+
+    /// One of the two, chosen by whether it worked, for the paths that build one
+    /// message out of a `match` and would otherwise fork the call.
+    pub(super) fn set_result(&mut self, ok: bool, msg: impl Into<String>) {
+        if ok {
+            self.set_status(msg);
+        } else {
+            self.set_failed(msg);
+        }
     }
 
     /// The status message while it is still fresh; `None` once it has expired.
@@ -251,7 +276,7 @@ impl App {
     }
 
     pub(super) fn refresh_tunnels(&mut self) {
-        self.tunnels = tunnels::list();
+        self.tunnels = tunnels::entries();
         let n = self.tunnel_rows().len();
         Self::clamp(&mut self.tunnel_state, n);
     }
@@ -417,13 +442,14 @@ impl App {
         }
     }
 
-    /// Put the cursor on the tunnel with this pid: the one you just made is the
-    /// one you are looking for, and on a busy list it is not row one.
-    pub(super) fn select_tunnel(&mut self, pid: u32) {
-        let at = self
-            .tunnel_rows()
-            .iter()
-            .position(|&r| self.tunnels[r].pid == pid);
+    /// Put the cursor on this forward: the one you just made is the one you are
+    /// looking for, and on a busy list it is not row one. Found by what it
+    /// forwards rather than by pid, so it works for one that is off too.
+    pub(super) fn select_tunnel(&mut self, spec: &str, host: &str) {
+        let at = self.tunnel_rows().iter().position(|&r| {
+            let t = &self.tunnels[r];
+            t.spec == spec && t.host == host
+        });
         if let Some(i) = at {
             self.tunnel_state.select(Some(i));
         }
@@ -492,7 +518,7 @@ impl App {
         self.keys.get(row)
     }
 
-    pub(super) fn selected_tunnel(&self) -> Option<&tunnels::Tunnel> {
+    pub(super) fn selected_tunnel(&self) -> Option<&tunnels::Entry> {
         let row = *self.tunnel_rows().get(self.tunnel_state.selected()?)?;
         self.tunnels.get(row)
     }
@@ -604,7 +630,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 // It ran and came back non-zero: the program printed its own
                 // reason on the screen we then drew over, but the exit code on
                 // its own has nothing to explain, so it stays a status line.
-                Some(s) => app.set_status(format!(
+                Some(s) => app.set_failed(format!(
                     "{} failed (exit {})",
                     run.label,
                     s.code().unwrap_or(-1)

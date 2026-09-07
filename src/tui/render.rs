@@ -193,14 +193,47 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                 app,
                 app.tunnels.len(),
                 rows.len(),
-                "No active tunnels.\nOpen one from the Hosts tab: `t` (forward) or `T` (expose).",
+                "No tunnels yet.\nPress `c` here, or `t` (reach) / `T` (expose) on a host.",
             ) {
                 empty(f, area, "Tunnels", &msg);
                 return;
             }
+            // Labels as wide as the widest on screen, so the specs line up under
+            // each other and a list of forwards reads as a table.
+            let labels: Vec<String> = rows.iter().map(|&i| app.tunnels[i].label()).collect();
+            let nw = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+            let sw = rows
+                .iter()
+                .map(|&i| app.tunnels[i].spec.len())
+                .max()
+                .unwrap_or(0);
             let items: Vec<ListItem> = rows
                 .iter()
-                .map(|&i| ListItem::new(Span::raw(app.tunnels[i].describe())))
+                .zip(&labels)
+                .map(|(&i, label)| {
+                    let t = &app.tunnels[i];
+                    // On or off in words, not a dot: the dots already mean
+                    // "can this machine reach that port" on the Hosts tab, and
+                    // a symbol that means two things means neither.
+                    let (state, state_style) = match t.on() {
+                        true => ("on ", Style::default().fg(Color::Green)),
+                        false => ("off", dim),
+                    };
+                    // Padded on the label's *characters*, since a derived one
+                    // carries an arrow and `{:width$}` counts bytes.
+                    let pad = " ".repeat(nw.saturating_sub(label.chars().count()));
+                    ListItem::new(Line::from(vec![
+                        Span::styled(state, state_style),
+                        Span::raw("  "),
+                        Span::styled(label.clone(), bold),
+                        Span::raw(pad),
+                        Span::raw("  "),
+                        Span::raw(format!("-{} ", t.kind)),
+                        Span::raw(format!("{:sw$}", t.spec)),
+                        Span::raw("  "),
+                        Span::raw(t.host.clone()),
+                    ]))
+                })
                 .collect();
             let list = List::new(items)
                 .block(counted("Tunnels", rows.len(), app.tunnels.len()))
@@ -361,7 +394,16 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     // Show the last action's result while it is fresh; otherwise the key hints,
     // so a stale message never masquerades as the current state.
     let (text, style) = match app.live_status() {
-        Some(msg) => (msg.to_string(), Style::default().fg(Color::Green)),
+        // Green for what worked, yellow for what did not, and never red: red
+        // means a gate in front of something you are about to lose.
+        Some(msg) => (
+            msg.to_string(),
+            Style::default().fg(if app.status_failed {
+                Color::Yellow
+            } else {
+                Color::Green
+            }),
+        ),
         None => {
             let hints = match app.view {
                 View::Hosts => HOSTS_HINTS,
@@ -410,7 +452,7 @@ pub(super) fn render_help(f: &mut Frame, area: Rect) {
         Line::raw("Keys      c new key (ssh-keygen -t ed25519)"),
         Line::raw("          y copy the public key · Y install it on a host (ssh-copy-id)"),
         Line::raw("          agent = loaded in ssh-agent · passphrase = asks to unlock"),
-        Line::raw("Tunnels   d kill it (ends the background ssh -N)    r refresh"),
+        Line::raw("Tunnels   ↵ start/stop (ssh -N) · c new · e edit · d stop, or delete"),
         Line::raw("Mounts    d unmount (fusermount -u <dir>)           r refresh"),
         Line::raw("Settings  ↵ change it · d back to default · r reload the file"),
         Line::raw(""),

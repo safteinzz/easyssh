@@ -32,10 +32,14 @@ Every wizard shows the exact command it will run, live, as you type - here the
 
 ![Mount wizard over the Hosts tab, showing the live sshfs command](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/wizard-mount.png)
 
-## See the forwards you opened
+## Keep the forwards you use
 
-A port forward is a background `ssh -N` with no window and nothing to close. This
-one lists them, says what each one actually does, and `d` kills it.
+A port forward is a background `ssh -N` with no window and nothing to close. Here
+every one you open is kept, and each row says what it actually does - `raspi:80 →
+8080` - without your having to name it. `↵` turns one on and off, `e` rewrites it,
+`d` stops it and deletes it once stopped, and the list is
+`~/.config/easyssh/tunnels` as `-L spec host` lines you can keep in your dotfiles.
+Type a name in the wizard only when you want the row to say *why* it exists.
 
 ![Tunnels tab with a forward selected and what it reaches](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/tunnels.png)
 

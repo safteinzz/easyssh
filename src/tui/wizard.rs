@@ -27,10 +27,24 @@ impl App {
                     .map(|k| format!("~/.ssh/{}", k.name()))
                     .collect();
                 if items.is_empty() {
-                    self.set_status("no keys in ~/.ssh to pick");
+                    self.set_failed("no keys in ~/.ssh to pick");
                 } else {
                     self.picker = Some(Picker {
                         title: "Pick a key for IdentityFile".into(),
+                        items,
+                        idx: 0,
+                        action: PickerAction::FillField { field: idx },
+                    });
+                }
+            } else if label == "Host" {
+                // The host a forward runs over is another entry in this same
+                // config, so it is picked rather than spelled out again.
+                let items: Vec<String> = self.hosts.iter().map(|h| h.alias.clone()).collect();
+                if items.is_empty() {
+                    self.set_failed("no hosts in ~/.ssh/config to forward through");
+                } else {
+                    self.picker = Some(Picker {
+                        title: "Which host carries this forward?".into(),
                         items,
                         idx: 0,
                         action: PickerAction::FillField { field: idx },
@@ -41,7 +55,7 @@ impl App {
                 // picked from the list rather than spelled out again.
                 let items: Vec<String> = self.hosts.iter().map(|h| h.alias.clone()).collect();
                 if items.is_empty() {
-                    self.set_status("no hosts in ~/.ssh/config to jump through");
+                    self.set_failed("no hosts in ~/.ssh/config to jump through");
                 } else {
                     self.picker = Some(Picker {
                         title: "Which host does ssh hop through? (ProxyJump)".into(),
@@ -185,7 +199,7 @@ impl App {
     /// for the interactive commands; mutates in place for the rest. On a
     /// validation error it puts the prompt back so the user can fix the field.
     pub(super) fn submit_prompt(&mut self) -> Option<PendingRun> {
-        let prompt = self.prompt.take()?;
+        let mut prompt = self.prompt.take()?;
         let v: Vec<String> = prompt
             .fields
             .iter()
@@ -219,7 +233,7 @@ impl App {
                         self.refresh_hosts();
                         self.set_status(format!("added host '{}' (config backed up)", v[0]));
                     }
-                    Err(e) => self.set_status(format!("add host failed: {e}")),
+                    Err(e) => self.set_failed(format!("add host failed: {e}")),
                 }
                 None
             }
@@ -249,7 +263,7 @@ impl App {
                         self.refresh_hosts();
                         self.set_status(format!("updated host '{}' (config backed up)", v[0]));
                     }
-                    Err(e) => self.set_status(format!("edit failed: {e}")),
+                    Err(e) => self.set_failed(format!("edit failed: {e}")),
                 }
                 None
             }
@@ -288,7 +302,7 @@ impl App {
             Action::Mount { host } => {
                 // Fail early with an install hint rather than a cryptic spawn error.
                 if !mounts::sshfs_installed() {
-                    self.set_status("sshfs is not installed (apt install sshfs · pacman -S sshfs · dnf install fuse-sshfs)");
+                    self.set_failed("sshfs is not installed (apt install sshfs · pacman -S sshfs · dnf install fuse-sshfs)");
                     return None;
                 }
                 // Blank remote path → sshfs mounts the login home directory.
@@ -300,7 +314,7 @@ impl App {
                 }
                 let local = spec.local.clone();
                 if let Err(e) = fs::create_dir_all(&local) {
-                    self.set_status(format!("mount: cannot create {local}: {e}"));
+                    self.set_failed(format!("mount: cannot create {local}: {e}"));
                     return None;
                 }
                 // Jump to the Mounts tab so the result (success or empty) is
@@ -323,86 +337,79 @@ impl App {
                     v[0].clone()
                 };
                 self.settings.set(&key, &value);
-                let msg = match self.settings.save() {
-                    Ok(_) => format!("{label} = {value}"),
-                    Err(e) => format!("could not save settings: {e}"),
+                let (ok, msg) = match self.settings.save() {
+                    Ok(_) => (true, format!("{label} = {value}")),
+                    Err(e) => (false, format!("could not save settings: {e}")),
                 };
                 self.apply_settings();
-                self.set_status(msg);
+                self.set_result(ok, msg);
                 None
             }
 
-            Action::Forward { host } => {
-                if v[2].is_empty() {
-                    self.set_status("forward: a remote port is required");
+            Action::Tunnel { editing } => {
+                if let Some(problem) = prompt::tunnel_problem(&prompt.fields) {
+                    self.set_status(problem);
                     self.prompt = Some(prompt);
                     return None;
                 }
-                let Some(target) = tunnel_target(&v[1]) else {
-                    self.set_status(
-                        "forward: a remote host takes no `:` port - use the port field",
-                    );
-                    self.prompt = Some(prompt);
-                    return None;
+                let (kind, spec, host) = prompt::tunnel_spec(&prompt.fields);
+                let name = prompt::tunnel_name(&prompt.fields);
+
+                // Rewriting a row: its process is carrying the old forward, and
+                // the old line is keyed by that forward, so a changed spec would
+                // otherwise leave it behind as a second row.
+                if let Some(was) = &editing {
+                    if let Some(pid) = was.pid {
+                        let _ = tunnels::kill(pid);
+                    }
+                    if !(was.kind == kind && was.spec == spec && was.host == host) {
+                        let _ = tunnels::forget(was.kind, &was.spec, &was.host);
+                    }
+                }
+                // Kept before it is started, because the line is the part you
+                // keep: a forward that will not come up is exactly the one you
+                // want left in the list to fix.
+                if let Err(e) = tunnels::remember(&tunnels::Saved {
+                    kind,
+                    spec: spec.clone(),
+                    host: host.clone(),
+                    name: name.clone(),
+                }) {
+                    self.set_failed(format!("could not save it: {e}"));
+                }
+
+                let row = tunnels::Entry {
+                    name: name.clone(),
+                    kind,
+                    spec: spec.clone(),
+                    host: host.clone(),
+                    live: None,
                 };
-                let remote = v[2].clone();
-                let local = if v[0].is_empty() {
-                    remote.clone()
-                } else {
-                    v[0].clone()
-                };
-                let spec = format!("{local}:{target}:{remote}");
-                match tunnels::open('L', &spec, &host) {
+                match tunnels::open(kind, &spec, &host) {
                     Ok(t) => {
                         self.goto_view(View::Tunnels);
                         self.refresh_tunnels();
-                        self.select_tunnel(t.pid);
-                        self.set_status(format!(
-                            "localhost:{local} → {target}:{remote} via {host}  (pid {})",
-                            t.pid
-                        ));
+                        self.select_tunnel(&spec, &host);
+                        self.set_status(format!("{} (pid {})", row.explain(), t.pid));
                     }
                     // ssh refused it - usually the local port is already taken.
                     // Leave the wizard open on the port that failed, so the fix
-                    // is editing one number rather than starting again.
+                    // is editing one number rather than starting again. Its line
+                    // is already written, so from here the wizard is editing
+                    // what it just made: fixing the port has to move that line,
+                    // not leave the attempt that failed behind as a row of its
+                    // own.
                     Err(e) => {
-                        self.set_status(format!("forward failed: {e}"));
-                        self.prompt = Some(prompt);
-                    }
-                }
-                None
-            }
-
-            Action::Reverse { host } => {
-                if v[2].is_empty() {
-                    self.set_status("expose: a local port is required");
-                    self.prompt = Some(prompt);
-                    return None;
-                }
-                let Some(target) = tunnel_target(&v[1]) else {
-                    self.set_status("expose: a local host takes no `:` port - use the port field");
-                    self.prompt = Some(prompt);
-                    return None;
-                };
-                let local = v[2].clone();
-                let remote = if v[0].is_empty() {
-                    local.clone()
-                } else {
-                    v[0].clone()
-                };
-                let spec = format!("{remote}:{target}:{local}");
-                match tunnels::open('R', &spec, &host) {
-                    Ok(t) => {
-                        self.goto_view(View::Tunnels);
+                        prompt.action = Action::Tunnel {
+                            editing: Some(prompt::Edited {
+                                kind,
+                                spec: spec.clone(),
+                                host: host.clone(),
+                                pid: None,
+                            }),
+                        };
                         self.refresh_tunnels();
-                        self.select_tunnel(t.pid);
-                        self.set_status(format!(
-                            "{host}:{remote} → {target}:{local}  (pid {})",
-                            t.pid
-                        ));
-                    }
-                    Err(e) => {
-                        self.set_status(format!("expose failed: {e}"));
+                        self.set_failed(format!("tunnel failed: {e}"));
                         self.prompt = Some(prompt);
                     }
                 }
@@ -410,20 +417,4 @@ impl App {
             }
         }
     }
-}
-
-/// The middle field of a `-L`/`-R` spec: the host the far side (or this side)
-/// resolves, blank meaning `localhost`. A spec is three colon-separated fields,
-/// so a `host:port` pasted in here would silently make it four and `Tunnel::ports`
-/// would stop being able to read back what we wrote; catch it and say so
-/// instead of letting ssh answer for us.
-fn tunnel_target(typed: &str) -> Option<String> {
-    let t = typed.trim();
-    if t.is_empty() {
-        return Some("localhost".into());
-    }
-    if t.contains(':') {
-        return None;
-    }
-    Some(t.to_string())
 }

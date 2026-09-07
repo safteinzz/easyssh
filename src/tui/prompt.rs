@@ -23,6 +23,10 @@ pub(crate) struct Field {
     /// Only shown, and only reachable, while field `.0`'s choice is one of `.1`.
     /// Hidden fields keep their slot in the vec, so field indices stay stable.
     pub(crate) show_if: Option<(usize, Vec<usize>)>,
+    /// Answered before the form opened, by the row the wizard was launched
+    /// from. It is carried and submitted, never shown and never reached: a
+    /// value you cannot change is not a question, and the title says what it is.
+    pub(crate) fixed: bool,
     /// Marked with a red `*`, the form convention everyone already reads. Only
     /// set it on a field the submit path actually refuses to go without, or the
     /// star is a lie: everything unmarked can be left blank.
@@ -46,6 +50,7 @@ impl Field {
             kind: Kind::Text,
             choice: 0,
             show_if: None,
+            fixed: false,
             required: false,
         }
     }
@@ -125,12 +130,21 @@ pub(crate) enum Action {
         key: String,
         label: String,
     },
-    Forward {
-        host: String,
+    /// Open or change one port forward. `editing` says what the row was
+    /// before, when this wizard is rewriting one rather than making one.
+    Tunnel {
+        editing: Option<Edited>,
     },
-    Reverse {
-        host: String,
-    },
+}
+
+/// The row a tunnel wizard is rewriting: the forward it was, which is the key of
+/// its line, and the process it is running under when it is up.
+#[derive(Clone)]
+pub(crate) struct Edited {
+    pub(crate) kind: char,
+    pub(crate) spec: String,
+    pub(crate) host: String,
+    pub(crate) pid: Option<u32>,
 }
 
 /// A modal wizard: a titled stack of fields plus the action to run on submit.
@@ -229,24 +243,59 @@ impl Prompt {
         }
     }
 
-    pub(super) fn forward(host: String) -> Self {
-        Self {
-            title: format!("reach a service on {host} from this machine (ssh -L)"),
+    /// The tunnel wizard, one form for both directions and both ways in: `t`
+    /// and `T` on a host pre-answer the direction and the host, `c` on the
+    /// Tunnels tab answers neither. The two halves of the form are the two
+    /// directions, and only the one being asked for is ever on screen.
+    pub(super) fn tunnel(kind: char, host: &str) -> Self {
+        let mut p = Self {
+            title: "open a port forward (ssh -N)".into(),
             idx: 0,
-            action: Action::Forward { host: host.clone() },
-            // In the order ssh writes them, so the form reads as the `-L` spec
-            // in the preview underneath it rather than as its mirror.
-            fields: vec![
-                Field::new("Local port", "= remote").hint("where you'll reach it"),
-                // The service does not have to live on the host itself: the
-                // middle of a `-L` spec is resolved over there, so anything
-                // that box can reach is reachable from here through it.
-                Field::new("Remote host", "localhost").hint(&format!("or a box {host} can reach")),
-                Field::new("Remote port", "")
-                    .hint("the service's port")
-                    .required(),
-            ],
+            action: Action::Tunnel { editing: None },
+            fields: tunnel_fields(),
+        };
+        p.fields[T_DIR].choice = usize::from(kind == 'R');
+        // Opened from a host, the host is settled: it goes in the title rather
+        // than staying a field you could point somewhere else by accident, and
+        // the cursor starts on the first thing actually left to decide, which
+        // is the port.
+        if !host.is_empty() {
+            p.title = format!("open a port forward on {host} (ssh -N)");
+            p.fields[T_HOST].value = host.to_string();
+            p.fields[T_HOST].fixed = true;
+            p.idx = if kind == 'R' { T_R_OPEN } else { T_L_OPEN };
         }
+        p
+    }
+
+    /// The same wizard over a forward that already exists.
+    pub(super) fn edit_tunnel(e: &tunnels::Entry) -> Self {
+        let (open, target, port) = e.ports().unwrap_or_default();
+        let mut p = Self {
+            title: format!("edit tunnel '{}'", e.label()),
+            idx: 0,
+            action: Action::Tunnel {
+                editing: Some(Edited {
+                    kind: e.kind,
+                    spec: e.spec.clone(),
+                    host: e.host.clone(),
+                    pid: e.pid(),
+                }),
+            },
+            fields: tunnel_fields(),
+        };
+        p.fields[T_DIR].choice = usize::from(e.kind == 'R');
+        p.fields[T_HOST].value = e.host.clone();
+        p.fields[T_NAME].value = e.name.clone().unwrap_or_default();
+        let (a, b, c) = if e.kind == 'L' {
+            (T_L_OPEN, T_L_HOST, T_L_PORT)
+        } else {
+            (T_R_OPEN, T_R_HOST, T_R_PORT)
+        };
+        p.fields[a].value = open.to_string();
+        p.fields[b].value = target.to_string();
+        p.fields[c].value = port.to_string();
+        p
     }
 
     /// A one-field wizard for a typed setting, pre-filled with what it is now.
@@ -264,25 +313,6 @@ impl Prompt {
         }
     }
 
-    pub(super) fn reverse(host: String) -> Self {
-        Self {
-            title: format!("expose a local port on {host} (ssh -R)"),
-            idx: 0,
-            action: Action::Reverse { host: host.clone() },
-            // In the order ssh writes them, as the forward's are.
-            fields: vec![
-                Field::new("Remote port", "= local").hint(&format!("opened on {host}")),
-                // The mirror of the forward's remote host: the middle of a `-R`
-                // spec is resolved here, so you can hand the far side something
-                // on your LAN and not only something of your own.
-                Field::new("Local host", "localhost").hint("or a box this machine can reach"),
-                Field::new("Local port", "")
-                    .hint("the service's port")
-                    .required(),
-            ],
-        }
-    }
-
     /// The one line of guidance a form carries under its fields, dim, or empty
     /// for a form that needs none. It lives here rather than in a label because
     /// what it explains is true of the whole form and stays true once a field
@@ -295,10 +325,10 @@ impl Prompt {
             }
             // Which side a name is looked up on is the one thing about a
             // forward that is not guessable, and it stays true once typed.
-            Action::Forward { .. } => {
+            Action::Tunnel { .. } if self.fields[T_DIR].choice == 0 => {
                 "the remote host is resolved over there, so localhost is the host itself"
             }
-            Action::Reverse { .. } => {
+            Action::Tunnel { .. } => {
                 "the local host is resolved here, so localhost is this machine"
             }
             _ => "",
@@ -308,6 +338,9 @@ impl Prompt {
     /// Whether field `i` applies to the answers given so far. Hidden fields keep
     /// their slot so indices stay stable, but are neither drawn nor reachable.
     pub(super) fn visible(&self, i: usize) -> bool {
+        if self.fields[i].fixed {
+            return false;
+        }
         match &self.fields[i].show_if {
             None => true,
             Some((on, values)) => values.contains(&self.fields[*on].choice),
@@ -367,21 +400,182 @@ impl Prompt {
                     .collect();
                 Some(shell_join(&argv))
             }
-            Action::Forward { host } => {
-                let target = if v(1).is_empty() { "localhost" } else { v(1) };
-                let remote = v(2);
-                let local = if v(0).is_empty() { remote } else { v(0) };
-                Some(format!("ssh -N -L {local}:{target}:{remote} {host}"))
-            }
-            Action::Reverse { host } => {
-                let target = if v(1).is_empty() { "localhost" } else { v(1) };
-                let local = v(2);
-                let remote = if v(0).is_empty() { local } else { v(0) };
-                Some(format!("ssh -N -R {remote}:{target}:{local} {host}"))
+            Action::Tunnel { .. } => {
+                // Built by the same resolver the submit path uses, so what is
+                // shown here is the command that runs, blanks and all.
+                let (kind, spec, host) = tunnel_spec(&self.fields);
+                Some(format!("ssh -N -{kind} {spec} {host}"))
             }
             Action::AddHost | Action::EditHost { .. } | Action::EditSetting { .. } => None,
         }
     }
+}
+
+/// The tunnel wizard's fields, by name. The form holds both directions at
+/// once and hides the half it is not asking about, so the indices stay put and
+/// only the visible ones ever mean anything.
+const T_DIR: usize = 0;
+const T_HOST: usize = 1;
+/// `-L`: the port opened here, then the host and port the far side dials.
+const T_L_OPEN: usize = 2;
+const T_L_HOST: usize = 3;
+const T_L_PORT: usize = 4;
+/// `-R`: the port opened there, then the host and port this side dials.
+const T_R_OPEN: usize = 5;
+const T_R_HOST: usize = 6;
+const T_R_PORT: usize = 7;
+/// Last, because it is the only optional thing in the form and the row already
+/// reads without it: a forward is listed by what it does unless you say better.
+const T_NAME: usize = 8;
+
+/// Both directions, written in the order ssh writes the spec so the form reads
+/// as the command in the preview underneath it rather than as its mirror. The
+/// labels swap sides between them, which is why they are two sets of fields and
+/// not one: `Local port` means the port you dial in a `-L` and the port that is
+/// served in a `-R`, and a form that reused the row would have to lie in one of
+/// them.
+fn tunnel_fields() -> Vec<Field> {
+    vec![
+        Field::choice(
+            "Direction",
+            &[
+                "reach a remote port from here (-L)",
+                "expose a local port over there (-R)",
+            ],
+        ),
+        Field::new("Host", "")
+            .required()
+            .hint("a host in ~/.ssh/config"),
+        Field::new("Local port", "= remote")
+            .hint("where you'll reach it")
+            .shown_when(T_DIR, &[0]),
+        // The service does not have to live on the host itself: the middle of a
+        // `-L` spec is resolved over there, so anything that box can reach is
+        // reachable from here through it.
+        Field::new("Remote host", "localhost")
+            .hint("or a box the host can reach")
+            .shown_when(T_DIR, &[0]),
+        Field::new("Remote port", "")
+            .hint("the service's port")
+            .required()
+            .shown_when(T_DIR, &[0]),
+        Field::new("Remote port", "= local")
+            .hint("opened on the host")
+            .shown_when(T_DIR, &[1]),
+        // The mirror of the forward's remote host: the middle of a `-R` spec is
+        // resolved here, so you can hand the far side something on your LAN and
+        // not only something of your own.
+        Field::new("Local host", "localhost")
+            .hint("or a box this machine can reach")
+            .shown_when(T_DIR, &[1]),
+        Field::new("Local port", "")
+            .hint("the service's port")
+            .required()
+            .shown_when(T_DIR, &[1]),
+        // The row is spelled out from the ports when this is blank, so a name
+        // is only ever for saying what the ports cannot: what it is *for*.
+        Field::new("Name", "").hint("a label, e.g. pihole"),
+    ]
+}
+
+/// The forward these fields describe: the flag, the spec and the host. The
+/// preview and the command that runs both come through here, so they cannot
+/// disagree about what a blank field means.
+pub(super) fn tunnel_spec(fields: &[Field]) -> (char, String, String) {
+    let v = |i: usize| fields[i].value.trim();
+    let host = v(T_HOST).to_string();
+    if fields[T_DIR].choice == 0 {
+        let target = non_blank(v(T_L_HOST), "localhost");
+        let remote = v(T_L_PORT);
+        let local = non_blank(v(T_L_OPEN), remote);
+        ('L', format!("{local}:{target}:{remote}"), host)
+    } else {
+        let target = non_blank(v(T_R_HOST), "localhost");
+        let local = v(T_R_PORT);
+        let remote = non_blank(v(T_R_OPEN), local);
+        ('R', format!("{remote}:{target}:{local}"), host)
+    }
+}
+
+/// The label typed over this forward, or `None` when it is left to speak for
+/// itself.
+pub(super) fn tunnel_name(fields: &[Field]) -> Option<String> {
+    let name = fields[T_NAME].value.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Why these fields are not a forward yet, in the words of what to do about it.
+/// `None` when they are one.
+pub(super) fn tunnel_problem(fields: &[Field]) -> Option<String> {
+    let v = |i: usize| fields[i].value.trim();
+    let forward = fields[T_DIR].choice == 0;
+    if v(T_HOST).is_empty() {
+        return Some("a host is required - ctrl-o picks one from ~/.ssh/config".into());
+    }
+    let (port, side) = if forward {
+        (v(T_L_PORT), "a remote port")
+    } else {
+        (v(T_R_PORT), "a local port")
+    };
+    if port.is_empty() {
+        return Some(format!("{side} is required"));
+    }
+    // A `host:port` here would make the spec four fields, which is one we can
+    // no longer read back; catch it rather than letting ssh answer for us.
+    let (target, label) = if forward {
+        (v(T_L_HOST), "the remote host")
+    } else {
+        (v(T_R_HOST), "the local host")
+    };
+    if target.contains(':') {
+        return Some(format!("{label} takes no `:` port - use the port field"));
+    }
+    None
+}
+
+/// The most rows any one answer to field `on` can add to the form. A lone
+/// optional field reserves its row, so answering the question above it does not
+/// resize the frame under the cursor - but two branches of the same size swap
+/// row for row and need nothing spare, which is what keeps the tunnel wizard
+/// from carrying three blank rows for the direction it is not asking about.
+fn reserved_rows(fields: &[Field], on: usize) -> usize {
+    let answers = match &fields[on].kind {
+        Kind::Choice(options) => options.len(),
+        _ => 1,
+    };
+    (0..answers)
+        .map(|answer| {
+            fields
+                .iter()
+                .filter(|f| {
+                    matches!(&f.show_if, Some((c, values)) if *c == on && values.contains(&answer))
+                })
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Where each hidden field's reserved rows are made up: at the end of the block
+/// it belongs to, so the fields on screen stay together and the gap is always in
+/// the same place.
+fn reserved_after(fields: &[Field], visible: impl Fn(usize) -> bool) -> Vec<usize> {
+    let mut pad = vec![0usize; fields.len()];
+    for on in 0..fields.len() {
+        let block: Vec<usize> = (0..fields.len())
+            .filter(|&i| matches!(&fields[i].show_if, Some((c, _)) if *c == on))
+            .collect();
+        let Some(&last) = block.last() else {
+            continue;
+        };
+        let shown = block.iter().filter(|&&i| visible(i)).count();
+        pad[last] += reserved_rows(fields, on).saturating_sub(shown);
+    }
+    pad
+}
+
+fn non_blank<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.is_empty() { fallback } else { value }
 }
 
 /// The column a wizard's values start in, measured from the label's first
@@ -421,13 +615,18 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
     let mut texts: Vec<String> = Vec::new();
     let dim = Style::default().add_modifier(Modifier::DIM);
     let col = value_column(&p.fields);
+    // Rows held clear for the fields the answers hide, so the box never resizes
+    // under the cursor. They are made up at the end of the block they belong to
+    // rather than one per hidden field, which is what a form holding two
+    // branches of the same shape needs: nothing.
+    let pad = reserved_after(&p.fields, |i| p.visible(i));
     for (i, field) in p.fields.iter().enumerate() {
-        // A field that does not apply to the answers so far keeps its row and
-        // draws nothing: answering the question above it must not resize the
-        // box under the cursor.
+        let blanks = pad[i];
         if !p.visible(i) {
-            lines.push(Line::raw(""));
-            texts.push(String::new());
+            for _ in 0..blanks {
+                lines.push(Line::raw(""));
+                texts.push(String::new());
+            }
             continue;
         }
         let active = i == p.idx;
@@ -477,6 +676,10 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             tail
         ));
         lines.push(Line::from(spans));
+        for _ in 0..blanks {
+            lines.push(Line::raw(""));
+            texts.push(String::new());
+        }
     }
     // One line of guidance for the whole form, where a parenthetical in two
     // labels used to sit - and go missing exactly when the field was filled in.

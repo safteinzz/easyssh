@@ -38,7 +38,7 @@ fn renders_chrome_and_wizards() {
     app.prompt = None;
 
     // The forward wizard builds off a host name.
-    app.prompt = Some(Prompt::forward("box".into()));
+    app.prompt = Some(Prompt::tunnel('L', "box"));
     let fwd = render(&mut app);
     assert!(fwd.contains("Remote port"), "forward field missing");
 
@@ -477,8 +477,13 @@ fn mount_tab_skips_the_hidden_fields() {
 
 /// Set a wizard field by its label, so these tests describe what was typed
 /// rather than which row it happened to be on.
+/// Fill a field by its label - the first *visible* one, since a form that holds
+/// both directions of a tunnel at once has two fields called `Remote port` and
+/// hides the one it is not asking about.
 fn fill(p: &mut Prompt, label: &str, value: &str) {
-    let i = p.fields.iter().position(|f| f.label == label).unwrap();
+    let i = (0..p.fields.len())
+        .find(|&i| p.visible(i) && p.fields[i].label == label)
+        .unwrap();
     p.fields[i].value = value.into();
 }
 
@@ -486,7 +491,7 @@ fn fill(p: &mut Prompt, label: &str, value: &str) {
 fn a_forward_can_reach_past_the_host_it_goes_through() {
     // The middle of a `-L` spec is resolved on the far side, so a forward is
     // not limited to services on the host itself.
-    let mut p = Prompt::forward("jumpbox".into());
+    let mut p = Prompt::tunnel('L', "jumpbox");
     fill(&mut p, "Local port", "8443");
     fill(&mut p, "Remote host", "gitlab.example.com");
     fill(&mut p, "Remote port", "443");
@@ -497,7 +502,7 @@ fn a_forward_can_reach_past_the_host_it_goes_through() {
 
     // Blank remote host is the host itself, and a blank local port is the
     // remote one - both of which the placeholders promise.
-    let mut p = Prompt::forward("raspi".into());
+    let mut p = Prompt::tunnel('L', "raspi");
     fill(&mut p, "Remote port", "5432");
     assert_eq!(
         p.command_preview().unwrap(),
@@ -508,7 +513,7 @@ fn a_forward_can_reach_past_the_host_it_goes_through() {
 #[test]
 fn a_reverse_can_expose_something_that_is_not_this_machine() {
     // The mirror: the middle of a `-R` spec is resolved here.
-    let mut p = Prompt::reverse("raspi".into());
+    let mut p = Prompt::tunnel('R', "raspi");
     fill(&mut p, "Remote port", "9000");
     fill(&mut p, "Local host", "printer.lan");
     fill(&mut p, "Local port", "631");
@@ -517,7 +522,7 @@ fn a_reverse_can_expose_something_that_is_not_this_machine() {
         "ssh -N -R 9000:printer.lan:631 raspi"
     );
 
-    let mut p = Prompt::reverse("raspi".into());
+    let mut p = Prompt::tunnel('R', "raspi");
     fill(&mut p, "Local port", "3000");
     assert_eq!(
         p.command_preview().unwrap(),
@@ -697,20 +702,22 @@ fn a_new_tunnel_is_the_selected_one() {
     // app's job rather than three keypresses.
     let mut app = App::empty();
     app.view = View::Tunnels;
-    app.tunnels = [111, 222, 333]
+    app.tunnels = [8080, 8081, 8082]
         .iter()
-        .map(|pid| tunnels::Tunnel {
-            pid: *pid,
+        .map(|port| tunnels::Entry {
+            name: None,
             kind: 'L',
-            spec: "8080:localhost:80".into(),
+            spec: format!("{port}:localhost:80"),
             host: "web01".into(),
-            log: "/nonexistent".into(),
+            live: None,
         })
         .collect();
     app.tunnel_state.select(Some(0));
 
-    app.select_tunnel(333);
-    assert_eq!(app.selected_tunnel().unwrap().pid, 333);
+    // Found by what it forwards rather than by pid, so the same lookup works
+    // for a saved one that is not running yet.
+    app.select_tunnel("8082:localhost:80", "web01");
+    assert_eq!(app.selected_tunnel().unwrap().spec, "8082:localhost:80");
 }
 
 #[test]

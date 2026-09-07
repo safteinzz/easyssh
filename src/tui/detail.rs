@@ -167,10 +167,7 @@ fn tunnel_lines(app: &App) -> Vec<Line<'static>> {
     let Some(t) = app.selected_tunnel() else {
         return vec![Line::styled("nothing selected", dim())];
     };
-    let mut lines = vec![
-        Line::styled(format!("-{} {}", t.kind, t.spec), heading()),
-        Line::raw(""),
-    ];
+    let mut lines = vec![Line::styled(t.label(), heading()), Line::raw("")];
 
     // What it is for, before what it is made of.
     lines.push(Line::raw(t.explain()));
@@ -180,28 +177,35 @@ fn tunnel_lines(app: &App) -> Vec<Line<'static>> {
         lines.push(reach_line(Some(reach), jump_of(app, &t.host)));
     }
     lines.push(row("Host", t.host.clone()));
-    lines.push(row("Process", format!("pid {}", t.pid)));
-    if let Some(started) = t.started_at() {
-        // The log file is created as the tunnel is spawned, so its age is the
-        // tunnel's age.
-        let secs = started
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        lines.push(row("Opened", history::ago(secs, history::now())));
-    }
+    match t.live.as_ref() {
+        Some(live) => {
+            lines.push(row("Process", format!("pid {}", live.pid)));
+            if let Some(started) = live.started_at() {
+                // The log file is created as the tunnel is spawned, so its age
+                // is the tunnel's age.
+                let secs = started
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                lines.push(row("Opened", history::ago(secs, history::now())));
+            }
 
-    // A forward that half-died is otherwise silent: ssh's own words are the
-    // only explanation there is.
-    let stderr = t.stderr();
-    if !stderr.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(stderr, Style::default().fg(Color::Yellow)));
+            // A forward that half-died is otherwise silent: ssh's own words are
+            // the only explanation there is.
+            let stderr = live.stderr();
+            if !stderr.is_empty() {
+                lines.push(Line::raw(""));
+                lines.push(Line::styled(stderr, Style::default().fg(Color::Yellow)));
+            }
+        }
+        None => lines.push(row("Process", "off - ↵ starts it".into())),
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::styled(t.command(), Style::default().fg(Color::Green)));
-    lines.push(Line::styled(format!("kill {}", t.pid), dim()));
+    if let Some(pid) = t.pid() {
+        lines.push(Line::styled(format!("kill {pid}"), dim()));
+    }
     lines
 }
 

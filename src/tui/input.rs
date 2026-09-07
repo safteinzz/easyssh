@@ -151,12 +151,12 @@ impl App {
                     Some(_) => {
                         self.settings.cycle(row.key, 1);
                         let shown = self.selected_setting().map(|r| r.value).unwrap_or_default();
-                        let msg = match self.settings.save() {
-                            Ok(_) => format!("{} = {shown}", row.label),
-                            Err(e) => format!("could not save settings: {e}"),
+                        let (ok, msg) = match self.settings.save() {
+                            Ok(_) => (true, format!("{} = {shown}", row.label)),
+                            Err(e) => (false, format!("could not save settings: {e}")),
                         };
                         self.apply_settings();
-                        self.set_status(msg);
+                        self.set_result(ok, msg);
                     }
                     None => self.prompt = Some(Prompt::edit_setting(&row)),
                 }
@@ -222,17 +222,20 @@ impl App {
                     let h = self.selected_host()?;
                     h.hostname.clone().unwrap_or_else(|| h.alias.clone())
                 };
-                let msg = match Command::new("ssh-keygen").arg("-R").arg(&target).output() {
+                let (ok, msg) = match Command::new("ssh-keygen").arg("-R").arg(&target).output() {
                     Ok(o) if o.status.success() => {
-                        format!("ssh-keygen -R {target}: cleared known_hosts")
+                        (true, format!("ssh-keygen -R {target}: cleared known_hosts"))
                     }
-                    Ok(o) => format!(
-                        "ssh-keygen -R failed: {}",
-                        String::from_utf8_lossy(&o.stderr).trim()
+                    Ok(o) => (
+                        false,
+                        format!(
+                            "ssh-keygen -R failed: {}",
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        ),
                     ),
-                    Err(e) => format!("could not run ssh-keygen: {e}"),
+                    Err(e) => (false, format!("could not run ssh-keygen: {e}")),
                 };
-                self.set_status(msg);
+                self.set_result(ok, msg);
                 None
             }
             KeyCode::Char('r') => {
@@ -248,12 +251,12 @@ impl App {
             }
             KeyCode::Char('t') => {
                 let alias = self.selected_host()?.alias.clone();
-                self.prompt = Some(Prompt::forward(alias));
+                self.prompt = Some(Prompt::tunnel('L', &alias));
                 None
             }
             KeyCode::Char('T') => {
                 let alias = self.selected_host()?.alias.clone();
-                self.prompt = Some(Prompt::reverse(alias));
+                self.prompt = Some(Prompt::tunnel('R', &alias));
                 None
             }
             _ => None,
@@ -282,7 +285,7 @@ impl App {
             KeyCode::Char('Y') => {
                 let path = self.selected_key()?.path.clone();
                 if self.hosts.is_empty() {
-                    self.set_status("no hosts in ~/.ssh/config to copy to");
+                    self.set_failed("no hosts in ~/.ssh/config to copy to");
                     return None;
                 }
                 let name = path
@@ -310,16 +313,20 @@ impl App {
             KeyCode::Char('y') => {
                 let path = self.selected_key()?.path.clone();
                 let pubpath = path.with_extension("pub");
-                self.set_status(match fs::read_to_string(&pubpath) {
+                let (ok, msg) = match fs::read_to_string(&pubpath) {
                     Ok(text) => match crate::clip::copy(text.trim()) {
-                        Ok(tool) => format!(
-                            "copied {}.pub to the clipboard ({tool})",
-                            path.file_name().unwrap_or_default().to_string_lossy()
+                        Ok(tool) => (
+                            true,
+                            format!(
+                                "copied {}.pub to the clipboard ({tool})",
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            ),
                         ),
-                        Err(e) => format!("clipboard: {e}"),
+                        Err(e) => (false, format!("clipboard: {e}")),
                     },
-                    Err(e) => format!("cannot read {}: {e}", pubpath.display()),
-                });
+                    Err(e) => (false, format!("cannot read {}: {e}", pubpath.display())),
+                };
+                self.set_result(ok, msg);
                 None
             }
             KeyCode::Char('r') => {
@@ -331,13 +338,61 @@ impl App {
         }
     }
 
+    /// The Tunnels tab. Every row is a forward you keep, so the keys are the
+    /// same for all of them: Enter is the off switch a background `ssh -N` never
+    /// had, and `d` stops one that is up, or deletes the line of one that is
+    /// already stopped. Two presses to be rid of it, and no gate in front of the
+    /// one you do all day.
     pub(super) fn tunnels_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         match key.code {
+            KeyCode::Enter => {
+                self.toggle_tunnel();
+                None
+            }
+            // `c` = create, the same key in every view. The host is a field
+            // here rather than the selected row, since this tab has no host.
+            KeyCode::Char('c') => {
+                self.prompt = Some(Prompt::tunnel('L', ""));
+                None
+            }
+            KeyCode::Char('e') => {
+                // A spec with a bind address in front is four fields, which the
+                // form has three of: say so rather than rewriting it wrong.
+                if self.selected_tunnel()?.ports().is_none() {
+                    self.set_status("this spec has a bind address - edit the file by hand");
+                    return None;
+                }
+                let prompt = Prompt::edit_tunnel(self.selected_tunnel()?);
+                self.prompt = Some(prompt);
+                None
+            }
             KeyCode::Char('d') | KeyCode::Char('x') => {
-                let pid = self.selected_tunnel()?.pid;
-                let _ = tunnels::kill(pid);
-                self.refresh_tunnels();
-                self.set_status(format!("killed tunnel {pid}"));
+                let (label, kind, spec, host, pid) = {
+                    let t = self.selected_tunnel()?;
+                    (t.label(), t.kind, t.spec.clone(), t.host.clone(), t.pid())
+                };
+                match pid {
+                    // Stopping is trivially undone by the very next keypress, so
+                    // it happens at once.
+                    Some(pid) => {
+                        let _ = tunnels::kill(pid);
+                        self.refresh_tunnels();
+                        self.set_status(format!("stopped '{label}'"));
+                    }
+                    // Losing the line is not, so that one asks first.
+                    None => {
+                        self.confirm = Some(Confirm::new(
+                            "delete tunnel",
+                            format!("Delete '{label}' from the forwards you keep?"),
+                            ConfirmAction::DeleteTunnel {
+                                kind,
+                                spec,
+                                host,
+                                label,
+                            },
+                        ));
+                    }
+                }
                 None
             }
             KeyCode::Char('r') => {
@@ -346,6 +401,35 @@ impl App {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// Enter: off when it is up, on when it is not.
+    fn toggle_tunnel(&mut self) {
+        let Some(t) = self.selected_tunnel() else {
+            return;
+        };
+        let (label, kind, spec, host, pid) =
+            (t.label(), t.kind, t.spec.clone(), t.host.clone(), t.pid());
+        match pid {
+            Some(pid) => {
+                let _ = tunnels::kill(pid);
+                self.refresh_tunnels();
+                self.set_status(format!("stopped '{label}'"));
+            }
+            None => match tunnels::open(kind, &spec, &host) {
+                Ok(t) => {
+                    self.refresh_tunnels();
+                    self.select_tunnel(&spec, &host);
+                    self.set_status(format!("started '{label}' (pid {})", t.pid));
+                }
+                // Nothing to offer: the port is taken, or the host said no. It
+                // is ssh's own words, and they have to be read.
+                Err(e) => self.alert(
+                    "tunnel failed",
+                    format!("ssh -N -{kind} {spec} {host}\n\n{e}"),
+                ),
+            },
         }
     }
 

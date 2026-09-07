@@ -26,7 +26,11 @@ Hide
 Type "./stage.sh up >/dev/null 2>&1"
 Enter
 Sleep 4s
-Type "./stage.sh shell"
+# `exec`, so a stage that refuses to open takes the terminal with it: without it
+# the script exits, the outer shell survives, and every keystroke after this
+# lands in the *real* home - which is how a README image ends up showing
+# somebody's actual connections.
+Type "exec ./stage.sh shell"
 Enter
 Sleep 2s
 Type "clear"
@@ -80,6 +84,8 @@ Screenshot ../readme-assets/mounts.png
 Sleep 700ms
 
 # ---- Tunnels -------------------------------------------------------------
+# The staged list is three saved forwards, all off; this adds a fourth that is
+# really up, so the shot shows both halves of what the tab is for.
 Hide
 Type "d"
 Sleep 2s
@@ -101,6 +107,9 @@ Sleep 300ms
 Enter
 Sleep 300ms
 Type "5432"
+Enter
+Sleep 300ms
+Type "pgdata"
 Enter
 Sleep 3s
 Show

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A staged ~/.ssh for the README screenshots and the demo GIF: fake hosts, fake
-# keys, fake history, fake tunnels. Nothing here touches your real ~/.ssh, your
+# keys, fake history, saved tunnels. Nothing here touches your real ~/.ssh, your
 # real agent or your real state dir - every path is redirected into ./home, XDG
 # variables included.
 #
@@ -216,24 +216,21 @@ seed_history() {
 }
 
 seed_tunnels() {
-  # essh tracks tunnels in a TSV and keeps a row only while /proc/<pid> exists,
-  # so a placeholder process per row is a complete, harmless stand-in.
-  local state="$STAGE/.local/state/easyssh"
-  mkdir -p "$state/tunnels"
-  : > "$state/tunnels.tsv"
-  local i=0
-  while read -r kind spec host; do
-    sleep 86400 > /dev/null 2>&1 &
-    local pid=$!
-    echo "$pid" >> "$PIDS"
-    local log="$state/tunnels/stage-$i.log"
-    : > "$log"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$pid" "$kind" "$spec" "$host" "$log" >> "$state/tunnels.tsv"
-    i=$((i + 1))
-  done <<'ROWS'
-L 8080:localhost:80 web01
-L 5432:localhost:5432 db-primary
-R 9000:localhost:3000 bastion
+  # A saved forward is a line in a config file, not a process, so the list is
+  # real without anything running: three named ones, all off. A tunnel that is
+  # actually up needs a server that really speaks ssh, which is what
+  # ESSH_DEMO_HOST is for.
+  local cfg="$STAGE/.config/easyssh"
+  mkdir -p "$cfg"
+  cat > "$cfg/tunnels" <<'ROWS'
+# easyssh tunnels - the forwards you keep, one `-L spec host` line each, and
+# ` = a label` after it where you named one. -L reaches a remote service from
+# here, -R exposes a local one over there. The Tunnels tab writes this file;
+# `enter` turns a line on and off.
+
+-L 8080:localhost:80 web01 = pihole
+-L 5432:localhost:5432 db-primary
+-R 9000:localhost:3000 bastion = laptop web
 ROWS
 }
 

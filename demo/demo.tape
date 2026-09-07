@@ -31,7 +31,11 @@ Hide
 Type "./stage.sh up >/dev/null 2>&1"
 Enter
 Sleep 4s
-Type "./stage.sh shell"
+# `exec`, so a stage that refuses to open takes the terminal with it: without it
+# the script exits, the outer shell survives, and every keystroke after this
+# lands in the *real* home - which is how a README image ends up showing
+# somebody's actual connections.
+Type "exec ./stage.sh shell"
 Enter
 Sleep 3s
 Type "clear"
@@ -118,7 +122,8 @@ Enter
 Sleep 800ms
 
 # The form is the `-L` spec in the order ssh writes it: the port opened here,
-# the host the far side resolves, the port over there.
+# the host the far side resolves, the port over there. Nothing has to be named:
+# the row spells itself out from what the forward does.
 Type "t"
 Sleep 1.5s
 Type "5432"
@@ -130,13 +135,19 @@ Sleep 500ms
 Type "5432"
 Sleep 1.2s
 Enter
+Sleep 500ms
+Enter
 Sleep 3s
 
 # 5432 is taken on this machine, so ssh refuses the forward and essh says so
 # instead of listing a tunnel that carries nothing. The wizard stays open with
-# what was typed, and Tab comes back round to the local port - the one that was
-# busy - so the fix is one number.
-Tab
+# what was typed, so the fix is one number: back up to the local port - the one
+# that was busy.
+Up
+Sleep 300ms
+Up
+Sleep 300ms
+Up
 Sleep 700ms
 Backspace 4
 Type "15432"
@@ -146,11 +157,20 @@ Sleep 400ms
 Enter
 Sleep 400ms
 Enter
+Sleep 400ms
+Enter
 Sleep 2.5s
 
-# a real background ssh -N, already selected, and `d` is the only easy way to
-# end one
+# It is up, and it is kept: enter is the off switch a background `ssh -N` never
+# had, and the line survives to be turned back on tomorrow.
+Enter
+Sleep 2s
+
+# `d` stops one that is running; on one already stopped it is the line itself
+# that goes, so that one asks first.
 Type "d"
+Sleep 1.5s
+Type "y"
 Sleep 2s
 
 # ===========================================================================

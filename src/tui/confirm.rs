@@ -66,6 +66,15 @@ pub(crate) enum ConfirmAction {
     ClearKnownHost {
         target: String,
     },
+    /// Drop a forward's line from `~/.config/easyssh/tunnels`. Only ever asked
+    /// about one that is already stopped, so there is no process to end: the
+    /// line is the whole of what is lost.
+    DeleteTunnel {
+        kind: char,
+        spec: String,
+        host: String,
+        label: String,
+    },
 }
 
 pub(super) fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
@@ -126,7 +135,7 @@ impl App {
                     self.refresh_hosts();
                     self.set_status(format!("deleted '{alias}' (config backed up)"));
                 }
-                Err(e) => self.set_status(format!("delete failed: {e}")),
+                Err(e) => self.set_failed(format!("delete failed: {e}")),
             },
             ConfirmAction::LazyUnmount { local } => match mounts::unmount_lazy(&local) {
                 Ok(_) => {
@@ -134,20 +143,37 @@ impl App {
                     self.refresh_mounts();
                     self.set_status(format!("fusermount -u -z {local}: lazy-unmounted"));
                 }
-                Err(e) => self.set_status(format!("lazy unmount failed: {e}")),
+                Err(e) => self.set_failed(format!("lazy unmount failed: {e}")),
+            },
+            ConfirmAction::DeleteTunnel {
+                kind,
+                spec,
+                host,
+                label,
+            } => match tunnels::forget(kind, &spec, &host) {
+                Ok(_) => {
+                    self.refresh_tunnels();
+                    self.set_status(format!("deleted tunnel '{label}'"));
+                }
+                Err(e) => self.set_failed(format!("delete failed: {e}")),
             },
             ConfirmAction::ClearKnownHost { target } => {
                 let out = Command::new("ssh-keygen").arg("-R").arg(&target).output();
-                self.set_status(match out {
-                    Ok(o) if o.status.success() => {
-                        format!("removed old key for {target}; press Enter to reconnect")
-                    }
-                    Ok(o) => format!(
-                        "ssh-keygen -R failed: {}",
-                        String::from_utf8_lossy(&o.stderr).trim()
+                let (ok, msg) = match out {
+                    Ok(o) if o.status.success() => (
+                        true,
+                        format!("removed old key for {target}; press Enter to reconnect"),
                     ),
-                    Err(e) => format!("could not run ssh-keygen: {e}"),
-                });
+                    Ok(o) => (
+                        false,
+                        format!(
+                            "ssh-keygen -R failed: {}",
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        ),
+                    ),
+                    Err(e) => (false, format!("could not run ssh-keygen: {e}")),
+                };
+                self.set_result(ok, msg);
             }
         }
         None
