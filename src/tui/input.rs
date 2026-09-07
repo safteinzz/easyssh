@@ -246,7 +246,10 @@ impl App {
             }
             KeyCode::Char('m') => {
                 let alias = self.selected_host()?.alias.clone();
-                self.prompt = Some(Prompt::mount(alias, &self.settings));
+                // Asked once, here, because the preview and the command that
+                // runs must agree and neither can read the config later.
+                let forced = sshcfg::forces_command(&alias);
+                self.prompt = Some(Prompt::mount(alias, forced, &self.settings));
                 None
             }
             KeyCode::Char('t') => {

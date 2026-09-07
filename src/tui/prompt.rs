@@ -124,6 +124,10 @@ pub(crate) enum Action {
     },
     Mount {
         host: String,
+        /// Whether this host's config forces a command, and so whether the ssh
+        /// client has to be wrapped. Captured when the wizard opens, because
+        /// the preview cannot read `~/.ssh/config` for itself.
+        forced_command: bool,
     },
     /// Change one typed setting; cycled ones never open a wizard.
     EditSetting {
@@ -221,12 +225,15 @@ impl Prompt {
 
     /// The mount wizard. Its two defaults come from Settings, so "where do
     /// mounts go" and "where is the sftp server" are answered once, not per mount.
-    pub(super) fn mount(host: String, settings: &Settings) -> Self {
+    pub(super) fn mount(host: String, forced_command: bool, settings: &Settings) -> Self {
         let root = settings.mount_root.trim_end_matches('/');
         Self {
             title: format!("mount {host} on a local folder (sshfs)"),
             idx: 0,
-            action: Action::Mount { host: host.clone() },
+            action: Action::Mount {
+                host: host.clone(),
+                forced_command,
+            },
             fields: vec![
                 Field::new("Remote path", "~ (home)"),
                 Field::new("Local mountpoint", &format!("{root}/{host}")),
@@ -387,13 +394,16 @@ impl Prompt {
                 }
                 Some(cmd)
             }
-            Action::Mount { host } => {
+            Action::Mount {
+                host,
+                forced_command,
+            } => {
                 // Built from the same spec the run path uses, so the mountpoint
                 // and the sudo wrapping shown here are exactly what gets executed.
                 // The one difference is cosmetic: a path under home is shown the
                 // way you would type it, since a shell expands `~` itself and an
                 // absolute home path is unreadable in a box this wide.
-                let argv: Vec<String> = MountSpec::from_fields(host, &self.fields)
+                let argv: Vec<String> = MountSpec::from_fields(host, *forced_command, &self.fields)
                     .argv()
                     .into_iter()
                     .map(|a| sshcfg::collapse_tilde(&a))

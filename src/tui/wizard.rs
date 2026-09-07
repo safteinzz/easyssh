@@ -299,14 +299,17 @@ impl App {
                 })
             }
 
-            Action::Mount { host } => {
+            Action::Mount {
+                host,
+                forced_command,
+            } => {
                 // Fail early with an install hint rather than a cryptic spawn error.
                 if !mounts::sshfs_installed() {
                     self.set_failed("sshfs is not installed (apt install sshfs · pacman -S sshfs · dnf install fuse-sshfs)");
                     return None;
                 }
                 // Blank remote path → sshfs mounts the login home directory.
-                let spec = MountSpec::from_fields(&host, &prompt.fields);
+                let spec = MountSpec::from_fields(&host, forced_command, &prompt.fields);
                 if let Some(problem) = spec.problem() {
                     self.set_status(problem);
                     self.prompt = Some(prompt);
@@ -323,7 +326,11 @@ impl App {
                 self.new_mount = Some(local.clone());
                 Some(PendingRun {
                     argv: spec.argv(),
-                    label: format!("sshfs {host}: → {local}"),
+                    // Home-relative, like every other path the UI shows: the
+                    // panel and `Mount::describe` collapse it, and an absolute
+                    // one here is both longer and the only place a screenshot
+                    // would carry whoever rendered it.
+                    label: format!("sshfs {host}: → {}", sshcfg::collapse_tilde(&local)),
                     connect: None,
                 })
             }

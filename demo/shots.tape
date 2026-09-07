@@ -111,7 +111,9 @@ Enter
 Sleep 300ms
 Type "pgdata"
 Enter
-Sleep 3s
+# Past the 3s a status line lasts: the shot is of the list and its keys, not of
+# the green line saying what the last keypress did.
+Sleep 4.5s
 Show
 Sleep 500ms
 Screenshot ../readme-assets/tunnels.png

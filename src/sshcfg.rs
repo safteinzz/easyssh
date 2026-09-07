@@ -171,6 +171,29 @@ fn merge_hosts(parsed: Vec<Host>) -> Vec<Host> {
     merged
 }
 
+/// Would `ssh <alias>` run a forced command? Its own `RemoteCommand`, or one
+/// from a wildcard block that matches it: `merge_hosts` drops pattern blocks, so
+/// the host list on its own cannot answer this, and the answer decides whether
+/// `sshfs` has to be immunised against it. A pattern we cannot evaluate (`?` or
+/// a negation) answers yes, because the cost of a needless `RemoteCommand=none`
+/// is a longer command line and the cost of a missing one is a mount that fails
+/// with nothing readable.
+pub fn forces_command(alias: &str) -> bool {
+    let mut parsed = Vec::new();
+    parse_file(&config_path(), &mut parsed);
+    parsed
+        .iter()
+        .filter(|h| h.remote_command.is_some())
+        .any(|h| match () {
+            _ if h.alias == alias => true,
+            _ if !is_pattern(&h.alias) => false,
+            // `glob_match` understands `*` and nothing else, so anything richer
+            // is treated as a match rather than guessed at.
+            _ if h.alias.contains('?') || h.alias.contains('!') => true,
+            _ => glob_match(&h.alias, alias),
+        })
+}
+
 /// True for aliases that are match patterns rather than concrete hosts.
 fn is_pattern(alias: &str) -> bool {
     alias.contains('*') || alias.contains('?') || alias.contains('!')

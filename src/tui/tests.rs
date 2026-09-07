@@ -318,7 +318,7 @@ fn picker_fills_identityfile_field() {
 fn mount_defaults_under_the_mount_folder() {
     // Mountpoints group under one folder so leftovers do not scatter, and the
     // default is absolute so it does not depend on where essh was launched.
-    let p = Prompt::mount("raspi".into(), &Settings::default());
+    let p = Prompt::mount("raspi".into(), false, &Settings::default());
     let mountpoint = p
         .fields
         .iter()
@@ -350,14 +350,26 @@ fn mount_point_expands_tilde() {
 
 /// A mount wizard with the rights choice already set.
 fn mount_prompt(choice: usize) -> Prompt {
-    let mut p = Prompt::mount("crusader".into(), &Settings::default());
+    let mut p = Prompt::mount("crusader".into(), false, &Settings::default());
     p.fields[2].choice = choice;
     p
 }
 
 #[test]
 fn mount_without_sudo_is_a_plain_sshfs() {
-    let spec = MountSpec::from_fields("crusader", &mount_prompt(0).fields);
+    let spec = MountSpec::from_fields("crusader", false, &mount_prompt(0).fields);
+    let local = mount_point("~/sshfs/crusader", "");
+    assert_eq!(spec.argv(), vec!["sshfs", "crusader:", &local]);
+}
+
+#[test]
+fn a_host_that_forces_a_command_gets_the_ssh_client_wrapped() {
+    // A RemoteCommand would run instead of the sftp server and the mount would
+    // fail with nothing readable, and it cannot be passed to sshfs directly:
+    // libfuse rejects an ssh option outright, so it goes through ssh_command.
+    // Only for a host that really has one, or every mount carries a defence it
+    // does not need.
+    let spec = MountSpec::from_fields("crusader", true, &mount_prompt(0).fields);
     let local = mount_point("~/sshfs/crusader", "");
     assert_eq!(
         spec.argv(),
@@ -373,14 +385,12 @@ fn mount_without_sudo_is_a_plain_sshfs() {
 
 #[test]
 fn mount_with_nopasswd_sudo_wraps_the_server() {
-    let spec = MountSpec::from_fields("crusader", &mount_prompt(1).fields);
+    let spec = MountSpec::from_fields("crusader", false, &mount_prompt(1).fields);
     let local = mount_point("~/sshfs/crusader", "");
     assert_eq!(
         spec.argv(),
         vec![
             "sshfs",
-            "-o",
-            "ssh_command=ssh -o RemoteCommand=none",
             "-o",
             "sftp_server=sudo /usr/lib/openssh/sftp-server",
             "crusader:",
@@ -393,7 +403,7 @@ fn mount_with_nopasswd_sudo_wraps_the_server() {
 fn mount_never_offers_to_send_a_password() {
     // Every way of feeding sudo a password from here leaks it into `ps` on
     // both machines, so the mode does not exist: NOPASSWD or nothing.
-    let p = Prompt::mount("crusader".into(), &Settings::default());
+    let p = Prompt::mount("crusader".into(), false, &Settings::default());
     let options = match &p.fields[2].kind {
         Kind::Choice(o) => o.clone(),
         _ => panic!("the rights field must be a choice"),
@@ -406,7 +416,7 @@ fn mount_never_offers_to_send_a_password() {
             .all(|f| !f.label.to_lowercase().contains("password"))
     );
     for choice in 0..options.len() {
-        let argv = MountSpec::from_fields("crusader", &mount_prompt(choice).fields).argv();
+        let argv = MountSpec::from_fields("crusader", false, &mount_prompt(choice).fields).argv();
         assert!(
             !argv.iter().any(|a| a.contains("sudo -S")),
             "no password is ever piped to sudo"
@@ -420,12 +430,12 @@ fn mount_refuses_a_comma_in_the_server_path() {
     let mut p = mount_prompt(1);
     p.fields[3].value = "/usr/lib,openssh/sftp-server".into();
     assert!(
-        MountSpec::from_fields("crusader", &p.fields)
+        MountSpec::from_fields("crusader", false, &p.fields)
             .problem()
             .is_some()
     );
     assert!(
-        MountSpec::from_fields("crusader", &mount_prompt(1).fields)
+        MountSpec::from_fields("crusader", false, &mount_prompt(1).fields)
             .problem()
             .is_none()
     );
@@ -534,7 +544,7 @@ fn a_reverse_can_expose_something_that_is_not_this_machine() {
 fn mount_preview_matches_what_runs() {
     // The preview must resolve the mountpoint exactly like the run path, so it
     // goes through the same `mount_point`.
-    let mut p = Prompt::mount("raspi".into(), &Settings::default());
+    let mut p = Prompt::mount("raspi".into(), false, &Settings::default());
     let idx = p
         .fields
         .iter()
@@ -545,7 +555,7 @@ fn mount_preview_matches_what_runs() {
     // have typed it.
     assert_eq!(
         p.command_preview().unwrap(),
-        "sshfs -o \"ssh_command=ssh -o RemoteCommand=none\" raspi: ~/exampledirectory"
+        "sshfs raspi: ~/exampledirectory"
     );
     assert_eq!(
         sshcfg::expand_tilde("~/exampledirectory").to_string_lossy(),
@@ -651,7 +661,7 @@ fn the_mount_folder_setting_decides_where_a_mount_lands() {
     // to offer it, and the command that runs has to use what the wizard offered.
     let mut s = Settings::default();
     s.set("mount_root", "/mnt");
-    let p = Prompt::mount("raspi".into(), &s);
+    let p = Prompt::mount("raspi".into(), false, &s);
     let field = p
         .fields
         .iter()
@@ -659,7 +669,7 @@ fn the_mount_folder_setting_decides_where_a_mount_lands() {
         .unwrap();
     assert_eq!(field.default, "/mnt/raspi");
     assert_eq!(
-        MountSpec::from_fields("raspi", &p.fields).local,
+        MountSpec::from_fields("raspi", false, &p.fields).local,
         "/mnt/raspi",
         "a blank field runs what the box offered"
     );

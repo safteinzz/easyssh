@@ -44,10 +44,14 @@ pub(crate) struct MountSpec {
     pub(crate) local: String,
     pub(crate) sudo: Sudo,
     pub(crate) server: String,
+    /// Whether this host's config forces a command, which is the only reason to
+    /// wrap the ssh client at all. Decided when the wizard opens, since the
+    /// preview cannot read the config for itself.
+    pub(crate) forced_command: bool,
 }
 
 impl MountSpec {
-    pub(super) fn from_fields(host: &str, fields: &[Field]) -> Self {
+    pub(super) fn from_fields(host: &str, forced_command: bool, fields: &[Field]) -> Self {
         let v = |i: usize| fields[i].value.trim();
         // Both of these fall back to the field's own default, which the mount
         // wizard filled in from Settings - so what runs is what the box offered.
@@ -62,6 +66,7 @@ impl MountSpec {
             local: mount_point(&fields[1].default, v(1)),
             sudo: Sudo::from_choice(fields[2].choice),
             server,
+            forced_command,
         }
     }
 
@@ -79,9 +84,14 @@ impl MountSpec {
         // sftp server, failing with nothing readable; `scp` immunises itself the
         // same way. It has to go through `ssh_command`, because libfuse checks
         // sshfs's options strictly and rejects an ssh one outright ("fuse:
-        // unknown option(s)") rather than passing it on.
-        argv.push("-o".into());
-        argv.push("ssh_command=ssh -o RemoteCommand=none".into());
+        // unknown option(s)") rather than passing it on. Only for a host that
+        // really forces one, though: on every other mount it is a no-op that
+        // makes the command twice as long as the one you would have typed, and
+        // the preview is there to teach the command, not to show our defences.
+        if self.forced_command {
+            argv.push("-o".into());
+            argv.push("ssh_command=ssh -o RemoteCommand=none".into());
+        }
         if let Some(opt) = self.sftp_server() {
             argv.push("-o".into());
             argv.push(opt);
