@@ -93,10 +93,8 @@ impl App {
             }
         }
 
-        // Field navigation. Plain h/j/k/l are *typed* in a text field, so a vim
-        // user moves between fields with the Ctrl-chords or the arrows/Tab -
-        // exactly the "submenu" rule. Ctrl-Down/Up also carry ctrl, but their arm
-        // matches on the code so they land as next/prev too.
+        // Plain h/j/k/l are typed text in a field, so fields move with the
+        // Ctrl-chords, the arrows or Tab.
         let next = matches!(key.code, KeyCode::Tab | KeyCode::Down)
             || (ctrl
                 && matches!(
@@ -326,10 +324,8 @@ impl App {
                 self.new_mount = Some(local.clone());
                 Some(PendingRun {
                     argv: spec.argv(),
-                    // Home-relative, like every other path the UI shows: the
-                    // panel and `Mount::describe` collapse it, and an absolute
-                    // one here is both longer and the only place a screenshot
-                    // would carry whoever rendered it.
+                    // Home-relative, like the panel and `Mount::describe`: an absolute
+                    // path here would also put whoever rendered a screenshot into it.
                     label: format!("sshfs {host}: → {}", sshcfg::collapse_tilde(&local)),
                     connect: None,
                 })
@@ -399,13 +395,10 @@ impl App {
                         self.select_tunnel(&spec, &host);
                         self.set_status(format!("{} (pid {})", row.explain(), t.pid));
                     }
-                    // ssh refused it - usually the local port is already taken.
-                    // Leave the wizard open on the port that failed, so the fix
-                    // is editing one number rather than starting again. Its line
-                    // is already written, so from here the wizard is editing
-                    // what it just made: fixing the port has to move that line,
-                    // not leave the attempt that failed behind as a row of its
-                    // own.
+                    // ssh refused it, usually because the local port is taken, so the
+                    // wizard stays open on the number to fix. Its line is already
+                    // written, so from here the wizard edits that line rather than
+                    // adding a second one.
                     Err(e) => {
                         prompt.action = Action::Tunnel {
                             editing: Some(prompt::Edited {

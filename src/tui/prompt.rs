@@ -262,10 +262,8 @@ impl Prompt {
             fields: tunnel_fields(),
         };
         p.fields[T_DIR].choice = usize::from(kind == 'R');
-        // Opened from a host, the host is settled: it goes in the title rather
-        // than staying a field you could point somewhere else by accident, and
-        // the cursor starts on the first thing actually left to decide, which
-        // is the port.
+        // The host is answered by the row this was opened from, so it is carried in
+        // the title instead, and the cursor starts on the first open question.
         if !host.is_empty() {
             p.title = format!("open a port forward on {host} (ssh -N)");
             p.fields[T_HOST].value = host.to_string();
@@ -398,11 +396,8 @@ impl Prompt {
                 host,
                 forced_command,
             } => {
-                // Built from the same spec the run path uses, so the mountpoint
-                // and the sudo wrapping shown here are exactly what gets executed.
-                // The one difference is cosmetic: a path under home is shown the
-                // way you would type it, since a shell expands `~` itself and an
-                // absolute home path is unreadable in a box this wide.
+                // The same spec the run path builds, with `~` put back the way you
+                // typed it: an absolute home path is unreadable in a box this wide.
                 let argv: Vec<String> = MountSpec::from_fields(host, *forced_command, &self.fields)
                     .argv()
                     .into_iter()
@@ -625,10 +620,9 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
     let mut texts: Vec<String> = Vec::new();
     let dim = Style::default().add_modifier(Modifier::DIM);
     let col = value_column(&p.fields);
-    // Rows held clear for the fields the answers hide, so the box never resizes
-    // under the cursor. They are made up at the end of the block they belong to
-    // rather than one per hidden field, which is what a form holding two
-    // branches of the same shape needs: nothing.
+    // Rows held clear for the fields an answer hides, so the box never resizes
+    // under the cursor. Made up at the end of each block, since two branches of
+    // the same size need none.
     let pad = reserved_after(&p.fields, |i| p.visible(i));
     for (i, field) in p.fields.iter().enumerate() {
         let blanks = pad[i];

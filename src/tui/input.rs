@@ -426,11 +426,11 @@ impl App {
                     self.select_tunnel(&spec, &host);
                     self.set_status(format!("started '{label}' (pid {})", t.pid));
                 }
-                // Nothing to offer: the port is taken, or the host said no. It
-                // is ssh's own words, and they have to be read.
-                Err(e) => self.alert(
+                Err(e) => self.report_failure(
                     "tunnel failed",
-                    format!("ssh -N -{kind} {spec} {host}\n\n{e}"),
+                    &format!("could not start '{label}'"),
+                    &format!("ssh -N -{kind} {spec} {host}"),
+                    &e.to_string(),
                 ),
             },
         }

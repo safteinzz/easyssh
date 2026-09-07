@@ -80,14 +80,10 @@ impl MountSpec {
 
     pub(super) fn argv(&self) -> Vec<String> {
         let mut argv = vec!["sshfs".to_string()];
-        // A host whose config sets a RemoteCommand would run that instead of the
-        // sftp server, failing with nothing readable; `scp` immunises itself the
-        // same way. It has to go through `ssh_command`, because libfuse checks
-        // sshfs's options strictly and rejects an ssh one outright ("fuse:
-        // unknown option(s)") rather than passing it on. Only for a host that
-        // really forces one, though: on every other mount it is a no-op that
-        // makes the command twice as long as the one you would have typed, and
-        // the preview is there to teach the command, not to show our defences.
+        // A RemoteCommand would run instead of the sftp server, and libfuse rejects
+        // `-o RemoteCommand=none` outright ("fuse: unknown option(s)"), so it has to
+        // reach ssh through `ssh_command`. Only for a host that really forces one:
+        // elsewhere it is a no-op twice the length of the command you would type.
         if self.forced_command {
             argv.push("-o".into());
             argv.push("ssh_command=ssh -o RemoteCommand=none".into());

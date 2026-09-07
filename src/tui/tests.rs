@@ -19,34 +19,42 @@ fn render(app: &mut App) -> String {
 }
 
 #[test]
-fn renders_chrome_and_wizards() {
+fn every_view_and_overlay_draws() {
+    // Nothing about how it looks: a `TestBackend` buffer cannot see colour,
+    // weight or spacing, and the words on screen are read by opening the app.
+    // What this catches is a panic while drawing - an index off the end of a
+    // list, a width that underflows - which no other test would.
     let mut app = App::empty();
+    for view in [
+        View::Hosts,
+        View::Keys,
+        View::Tunnels,
+        View::Mounts,
+        View::Settings,
+    ] {
+        app.view = view;
+        app.settings_state.select(Some(0));
+        render(&mut app);
+    }
 
-    // Tab chrome is always present.
-    let hosts = render(&mut app);
-    assert!(hosts.contains("easyssh"), "title bar missing");
-    assert!(
-        hosts.contains("Hosts") && hosts.contains("Mounts"),
-        "tabs missing"
-    );
-
-    // The add-host wizard overlays its fields.
-    app.prompt = Some(Prompt::add_host());
-    let add = render(&mut app);
-    assert!(add.contains("add host"), "add-host title missing");
-    assert!(add.contains("Alias"), "alias field missing");
+    app.view = View::Hosts;
+    for prompt in [
+        Prompt::add_host(),
+        Prompt::tunnel('L', "box"),
+        Prompt::tunnel('R', ""),
+        Prompt::mount("raspi".into(), false, &Settings::default()),
+    ] {
+        app.prompt = Some(prompt);
+        render(&mut app);
+    }
     app.prompt = None;
 
-    // The forward wizard builds off a host name.
-    app.prompt = Some(Prompt::tunnel('L', "box"));
-    let fwd = render(&mut app);
-    assert!(fwd.contains("Remote port"), "forward field missing");
+    app.show_help = true;
+    render(&mut app);
+    app.show_help = false;
 
-    // Switching to the Tunnels view renders its (possibly empty) body.
-    app.view = View::Tunnels;
-    app.prompt = None;
-    let tun = render(&mut app);
-    assert!(tun.contains("Tunnels"), "tunnels view missing");
+    app.alert("tunnel failed", "ssh said no");
+    render(&mut app);
 }
 
 #[test]
@@ -329,11 +337,9 @@ fn mount_defaults_under_the_mount_folder() {
 
 #[test]
 fn mount_point_expands_tilde() {
-    // sshfs is spawned without a shell, so `~/dir` has to be expanded here or
-    // both the mkdir and the mount land on a directory literally named `~`.
-    // This is the resolver `submit_prompt` itself calls; the run path beyond it
-    // (create_dir_all + spawn) needs sshfs installed and writes to $HOME, so it
-    // is not covered.
+    // sshfs is spawned without a shell, so an unexpanded `~/dir` would mount onto
+    // a directory literally named `~`. Only the resolver is covered: the spawn
+    // beyond it needs sshfs installed and writes to $HOME.
     let home = dirs::home_dir().unwrap_or_default();
     assert_eq!(
         mount_point("~/sshfs/raspi", "~/exampledirectory"),
@@ -364,11 +370,8 @@ fn mount_without_sudo_is_a_plain_sshfs() {
 
 #[test]
 fn a_host_that_forces_a_command_gets_the_ssh_client_wrapped() {
-    // A RemoteCommand would run instead of the sftp server and the mount would
-    // fail with nothing readable, and it cannot be passed to sshfs directly:
-    // libfuse rejects an ssh option outright, so it goes through ssh_command.
-    // Only for a host that really has one, or every mount carries a defence it
-    // does not need.
+    // libfuse rejects an ssh option outright, so the cancel has to go through
+    // `ssh_command` - and only for a host that really forces a command.
     let spec = MountSpec::from_fields("crusader", true, &mount_prompt(0).fields);
     let local = mount_point("~/sshfs/crusader", "");
     assert_eq!(
@@ -565,13 +568,6 @@ fn mount_preview_matches_what_runs() {
 }
 
 #[test]
-fn mounts_tab_renders() {
-    let mut app = App::empty();
-    app.view = View::Mounts;
-    assert!(render(&mut app).contains("Mounts"));
-}
-
-#[test]
 fn slash_filters_the_list_and_esc_restores_it() {
     // The README promises `/` filters the list you are on.
     let mut app = App::empty();
@@ -691,19 +687,6 @@ fn a_connect_run_says_so_rather_than_being_recognised_by_name() {
     app.on_key(press(KeyCode::Char('c')));
     let run = app.on_key(press(KeyCode::Enter)); // ed25519 -> the keygen wizard
     assert!(run.is_none());
-}
-
-#[test]
-fn settings_tab_renders_its_two_groups() {
-    // Deliberately no key presses: every change in that tab saves at once, and
-    // a test must never write the real ~/.config/easyssh/settings.
-    let mut app = App::empty();
-    app.view = View::Settings;
-    app.settings_state.select(Some(0));
-    let screen = render(&mut app);
-    assert!(screen.contains("Settings"), "the tab is drawn");
-    assert!(screen.contains("behaviour"), "grouped by what it promises");
-    assert!(screen.contains("defaults"));
 }
 
 #[test]

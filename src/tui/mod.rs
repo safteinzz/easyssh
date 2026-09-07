@@ -202,6 +202,23 @@ impl App {
         self.status_failed = true;
     }
 
+    /// Report a failure where it fits: the status line when the message is
+    /// short, an alert box when it is long or spans several lines.
+    ///
+    /// A line is enough for `Address already in use`, because the list behind
+    /// it still shows the state. A box is for what you have to read twice, and
+    /// it carries the command too, which a line has no room for.
+    pub(super) fn report_failure(&mut self, title: &str, said: &str, cmd: &str, err: &str) {
+        let err = err.trim();
+        let line = format!("{said}: {err}");
+        // Too tall or too wide for the bar, so it goes in the box.
+        if err.lines().count() > 1 || line.chars().count() > 90 {
+            self.alert(title, format!("{cmd}\n\n{err}"));
+        } else {
+            self.set_failed(line);
+        }
+    }
+
     /// One of the two, chosen by whether it worked, for the paths that build one
     /// message out of a `match` and would otherwise fork the call.
     pub(super) fn set_result(&mut self, ok: bool, msg: impl Into<String>) {
@@ -248,11 +265,8 @@ impl App {
     /// most likely reaching for, and it should not be a scroll away - unless you
     /// asked for plain alphabetical in Settings.
     pub(super) fn sort_hosts(&mut self) {
-        // A jumped host is a route rather than a machine you sit on - a repo to
-        // clone through your laptop, a box behind a bastion - and there are
-        // usually more of them than there are hosts you actually open. They sit
-        // as one block under the direct ones, in whichever order is chosen, so
-        // the list you scan first is the list you connect from.
+        // A jumped host is a route rather than a machine you sit on, and there are
+        // usually more of them, so they sort as one block under the direct ones.
         match self.settings.host_order {
             HostOrder::Recent => {
                 let history = &self.history;
@@ -582,9 +596,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
     while !app.should_quit {
         terminal.draw(|f| ui(f, app))?;
 
-        // While a status message is showing, or port probes are still landing,
-        // we wake up periodically so the screen can catch up on its own;
-        // otherwise block until the user actually presses a key, so an idle TUI
+        // Wake up only while something on screen is still changing, so an idle TUI
         // costs nothing.
         let timeout = if app.live_status().is_some() || app.probing() {
             Duration::from_millis(200)
@@ -647,11 +659,8 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 ),
             }
             app.refresh_all();
-            // We had the terminal taken off us, so every dot on the list is
-            // now a guess about a world we stopped watching: the box you just
-            // logged into is provably up, and the one you were fixing on
-            // another machine may have come back. Re-probe rather than leave a
-            // red dot that only `r` can talk out of being wrong.
+            // Every dot was learned before the child took the terminal, and the host we
+            // just logged into is provably up.
             app.start_probes();
             app.settle_new_mount();
         }

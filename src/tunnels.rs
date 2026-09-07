@@ -611,10 +611,8 @@ mod tests {
 
     #[test]
     fn the_saved_file_survives_a_round_trip_and_a_hand_edit() {
-        // The README promises `~/.config/easyssh/tunnels` is `-L spec host`
-        // lines you can keep in your dotfiles, so what we write has to parse
-        // back to what we meant, and what you write by hand has to survive us
-        // writing to it.
+        // The file is a README promise, so what we write has to parse back, and a
+        // hand-written line has to survive us writing to it.
         let file = "# mine\n-L 8080:localhost:80 raspi = pihole\n-R 5432:db.lan:5432 vps\n";
         let defs = saved_from(file);
         assert_eq!(defs.len(), 2);

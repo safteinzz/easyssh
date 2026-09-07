@@ -394,8 +394,6 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     // Show the last action's result while it is fresh; otherwise the key hints,
     // so a stale message never masquerades as the current state.
     let (text, style) = match app.live_status() {
-        // Green for what worked, yellow for what did not, and never red: red
-        // means a gate in front of something you are about to lose.
         Some(msg) => (
             msg.to_string(),
             Style::default().fg(if app.status_failed {
