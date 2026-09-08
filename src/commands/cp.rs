@@ -11,7 +11,7 @@ use std::path::Path;
 pub struct Args {
     /// One or more sources followed by the destination. A remote side is
     /// `host:path` (host = a config alias), e.g. `essh cp notes.md raspi:~`.
-    #[arg(required = true, num_args = 2..)]
+    #[arg(required = true, num_args = 2.., value_name = "PATH")]
     pub paths: Vec<String>,
 }
 

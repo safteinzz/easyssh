@@ -3,12 +3,9 @@
 //! One tool that swallows `ssh`, `scp`, `ssh-keygen`, `ssh-copy-id` and `sshfs`
 //! so you never dig through man pages or your own notes again.
 //!
-//!   essh                 Launch the TUI: browse hosts, keys, tunnels, mounts
-//!   essh <host> [args]   Connect (anything unknown is an ssh destination)
-//!   essh ls              List every host in ~/.ssh/config  (-v shows targets)
-//!   essh cp <src> <dst>  Copy files (scp, but `host:path` and auto -r)
-//!   essh self update     Reinstall the latest release from crates.io
-//!   essh self check      Ask crates.io whether a newer release exists
+//! This file is the clap `Cmd` enum and the dispatch match; what you can run is
+//! `essh --help`, which renders from the manifest, those doc comments and
+//! `AFTER`, and is the only copy of that list.
 //!
 //! The philosophy: the CLI holds only what's faster to type than to click.
 //! Everything you'd have to *look up* - new keys, copying keys, port forwards,
@@ -27,15 +24,28 @@ mod tunnels;
 
 use clap::{Parser, Subcommand};
 
-/// Shown under `essh --help`. The command list can't convey the two things that
-/// aren't subcommands: bare `essh` opens the TUI, and any bare word connects.
+/// clap's own layout with one change: `{before-help}` moves from above the
+/// description to just under `Usage:`, so the shapes block lands on top of the
+/// command list rather than on top of the screen.
+const TEMPLATE: &str =
+    "{about-with-newline}\n{usage-heading} {usage}\n\n{before-help}{all-args}{after-help}\n";
+
+/// Shown under `essh --help`: the shapes clap cannot list, because a bare word
+/// is a destination rather than a subcommand, and then the contract a script
+/// needs. Read top to bottom by somebody - or something - looking for the one
+/// line that answers "how do I run one command on that box", so that line is in
+/// the block rather than in prose below it.
+const WAYS: &str = "\x1b[1mWays to run it (not subcommands):\x1b[0m
+  essh                    open the toolbox (TUI): hosts, keys, tunnels, mounts, adding hosts
+  essh <host>             connect (any unknown word is an ssh destination, e.g. `essh raspi`)
+  essh <host> 'uptime'    run one command over ssh and come straight back
+  essh <host> [ssh args]  anything else goes straight to ssh (`essh raspi -p 2222`)";
+
+/// The rest of the block: what a script can expect, then where to look next.
 const AFTER: &str = concat!(
     "\
-Two more ways to run it (not subcommands):
-  essh                 open the toolbox (TUI): hosts, keys, tunnels, mounts
-  essh <host> [args]   connect (any unknown word is an ssh destination, e.g. `essh raspi -p 2222`)
-
-The toolbox is where keys, tunnels, mounts, and adding/editing hosts live.
+A connect becomes ssh itself, so stdout, stderr and the exit code are ssh's own
+and essh's words are on stderr; `essh ls` prints a table for people, not data.
 Run `essh <command> --help` for a command's details.",
     "\n\n",
     env!("CARGO_PKG_REPOSITORY"),
@@ -63,6 +73,10 @@ const LONG_VERSION: &str = concat!(
     version,
     long_version = LONG_VERSION,
     about,
+    // The shapes come first: this is a bare-first binary, so the command list is
+    // the leftovers and putting it on top answers the wrong question first.
+    help_template = TEMPLATE,
+    before_help = WAYS,
     after_help = AFTER
 )]
 struct Cli {
@@ -76,7 +90,7 @@ enum Cmd {
     ///   -v   also show where each alias connects
     #[command(verbatim_doc_comment)]
     Ls(commands::ls::Args),
-    /// Copy files over scp: alias:path shorthand, auto -r for directories
+    /// Copy files over scp: alias:path shorthand, auto -r for directories  <PATH> <PATH>...
     ///   essh cp notes.md raspi:~      one or more sources, then the destination
     #[command(verbatim_doc_comment)]
     Cp(commands::cp::Args),
