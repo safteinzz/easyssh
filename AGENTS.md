@@ -5,8 +5,6 @@ AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating pi
 
 Working brief for an AI coding agent, not documentation for people (the README covers that): the invariants, gotchas and decisions needed to change *this project* correctly without rediscovering them.
 
-**What does not belong here.** How to write code - comments, tests, error wording, how to answer, when to commit - is not project knowledge, and the user brings it himself in `~/dotfiles/development/MYRULES.md`, imported ahead of this file and outranking it. A rule that would be true in any repo is a sign it belongs there instead. Where the two genuinely contradict, ask rather than pick.
-
 ## Hard rules
 
 - `demo/` holds the screenshot and GIF rig: `stage.sh` builds a fake `~/.ssh` in `demo/home` (fake hosts, generated keys, seeded history, placeholder tunnels) with HOME and every XDG variable redirected into it, and the VHS tapes render `readme-assets/` from it. A tunnel, a mount and a login cannot be faked, so `raspi` points at a real machine only when `ESSH_DEMO_HOST` is set; nothing personal is ever in the repo. `stage.sh down` unmounts anything under the stage before deleting it and refuses if that fails, because a recursive delete walks straight through a mountpoint and onto the remote side - that is not hypothetical, it cost a real machine its dotfiles.
