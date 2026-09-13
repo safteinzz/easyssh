@@ -1,12 +1,9 @@
-# Every README screenshot, rendered by VHS instead of taken by hand. No tmux, no
-# window sizing, no cropping: the size below is the size of every shot, and a
-# rerun after a UI change replaces them all identically.
+# The README's two stills, Keys and Settings, rendered by VHS instead of taken
+# by hand. The rest of the pictures are GIFs, one tape each.
 #
 #   cd demo && vhs shots.tape
 #
-# The files are written straight into readme-assets/. The tunnel and the mount
-# shots need `raspi` to be a real machine, so export ESSH_DEMO_HOST first - see
-# the header of stage.sh. The frames only ever show the alias, never an address.
+# The files are written straight into readme-assets/.
 
 # Roughly 130 columns by 22 rows: wide enough for the detail panel, short enough
 # to stay readable when GitLab scales it down.
@@ -42,10 +39,6 @@ Sleep 3s
 Show
 Sleep 500ms
 
-# ---- Hosts ---------------------------------------------------------------
-Screenshot ../readme-assets/hosts.png
-Sleep 700ms
-
 # ---- Keys ----------------------------------------------------------------
 Hide
 Type "l"
@@ -55,74 +48,10 @@ Sleep 500ms
 Screenshot ../readme-assets/keys.png
 Sleep 700ms
 
-# ---- the mount wizard ----------------------------------------------------
-Hide
-Type "h"
-Sleep 500ms
-Type "/"
-Type "raspi"
-Enter
-Sleep 800ms
-Type "m"
-Sleep 1s
-Show
-Sleep 500ms
-Screenshot ../readme-assets/wizard-mount.png
-Sleep 700ms
-
-# ---- Mounts --------------------------------------------------------------
-Hide
-Enter
-Sleep 300ms
-Enter
-Sleep 300ms
-Enter
-Sleep 4s
-Show
-Sleep 500ms
-Screenshot ../readme-assets/mounts.png
-Sleep 700ms
-
-# ---- Tunnels -------------------------------------------------------------
-# The staged list is three saved forwards, all off; this adds a fourth that is
-# really up, so the shot shows both halves of what the tab is for.
-Hide
-Type "d"
-Sleep 2s
-Type "h"
-Sleep 300ms
-Type "h"
-Sleep 300ms
-Type "h"
-Sleep 500ms
-Type "/"
-Type "raspi"
-Enter
-Sleep 500ms
-Type "t"
-Sleep 500ms
-Type "15432"
-Enter
-Sleep 300ms
-Enter
-Sleep 300ms
-Type "5432"
-Enter
-Sleep 300ms
-Type "pgdata"
-Enter
-# Past the 3s a status line lasts: the shot is of the list and its keys, not of
-# the green line saying what the last keypress did.
-Sleep 4.5s
-Show
-Sleep 500ms
-Screenshot ../readme-assets/tunnels.png
-Sleep 700ms
-
 # ---- Settings ------------------------------------------------------------
 Hide
-Type "d"
-Sleep 1.5s
+Type "l"
+Sleep 300ms
 Type "l"
 Sleep 300ms
 Type "l"

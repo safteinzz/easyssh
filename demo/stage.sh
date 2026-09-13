@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# A staged ~/.ssh for the README screenshots and the demo GIF: fake hosts, fake
+# A staged ~/.ssh for the README pictures: fake hosts, fake
 # keys, fake history, saved tunnels. Nothing here touches your real ~/.ssh, your
 # real agent or your real state dir - every path is redirected into ./home, XDG
 # variables included.
 #
 #   ./stage.sh up     build the fixtures and start the helpers
+#   ./stage.sh fresh  the same, but raspi is a new machine: not in the config,
+#                     never visited, and taking a password until it has a key
 #   ./stage.sh run    launch essh against them (this is what you screenshot)
 #   ./stage.sh shell  a shell where `essh` is this build, for the CLI shots
 #   ./stage.sh down   unmount anything under the stage, then delete it
@@ -17,32 +19,14 @@
 # or loopback, every name is example.com (RFC 2606), and every key is generated
 # here and thrown away. There is nothing real in it to leak.
 #
-# One exception, and it is opt-in: a tunnel and a mount cannot be faked, because
-# both need a server that actually speaks ssh. Point the `raspi` entry at a box
-# you own and those two work:
-#
-#   cp demo/.env.example demo/.env      # then fill it in
-#
-# or export ESSH_DEMO_HOST / ESSH_DEMO_USER / ESSH_DEMO_KEY / ESSH_DEMO_PORT
-# yourself; the file is only a convenience, and it is gitignored.
-#
-# The Hosts list renders `User@HostName:Port`, so whatever you put in .env is on
-# screen: ESSH_DEMO_USER and ESSH_DEMO_HOST both reach a frame, and a login shown
-# in the GIF prints that machine's banner and prompt too. Keep them to a login
-# and an address you are happy to publish - a LAN address and your own name are
-# usually fine, a public IP is not.
+# A login, a tunnel and a mount need a server that really speaks ssh, so `raspi`
+# is one: a throwaway sshd in a podman container on 127.0.0.6, with an invented
+# user, hostname and home, removed on `down`. The first `up` builds its image,
+# which needs the network once.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# `demo/.env` if you made one. Sourced, not parsed, so it is a shell file like
-# any other - and gitignored, because it names a machine of yours.
-if [ -f "$HERE/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$HERE/.env"
-  set +a
-fi
 STAGE="$HERE/home"
 # Everything the rig creates lives inside the stage, so `down` takes all of it
 # with one guarded delete and nothing is left in demo/ to gitignore.
@@ -60,24 +44,12 @@ MARKER=".essh-demo-stage"
 PORT=2222
 UP_ADDRS=(127.0.0.2 127.0.0.3 127.0.0.4 127.0.0.5 127.0.0.6 127.0.0.7)
 
-# `raspi` is the one entry that can be a real machine - see the header. Unset,
-# it is another loopback socket like the rest, and the mount and tunnel wizards
-# will report that ssh refused them.
-if [ -n "${ESSH_DEMO_HOST:-}" ]; then
-  RASPI_HOST="$ESSH_DEMO_HOST"
-  RASPI_PORT="${ESSH_DEMO_PORT:-22}"
-  # Not $USER: the alias's login shows in the Hosts list, and every frame is
-  # the same for everyone. Set ESSH_DEMO_USER if yours is not `pi`.
-  RASPI_USER="${ESSH_DEMO_USER:-pi}"
-  # ssh expands `~` in an IdentityFile itself, but only for a value it reads
-  # from a config file - which is exactly where this one ends up.
-  RASPI_KEY="${ESSH_DEMO_KEY:-~/.ssh/id_ed25519}"
-else
-  RASPI_HOST="${UP_ADDRS[4]}"
-  RASPI_PORT="$PORT"
-  RASPI_USER="pi"
-  RASPI_KEY="~/.ssh/id_rsa"
-fi
+# `raspi` is the container, on its own loopback address, so no listener below
+# takes that socket.
+RASPI_HOST="${UP_ADDRS[4]}"
+CENGINE="$(command -v podman || true)"
+CONTAINER="easyssh-demo-sshd"
+IMAGE="localhost/easyssh-demo-sshd"
 
 # The complete environment anything staged runs in. Used with `env -i`, so this
 # is not "the real environment plus overrides" - it is everything there is.
@@ -100,6 +72,13 @@ env_for_stage() {
 
 write_config() {
   mkdir -p "$STAGE/.ssh"
+  local raspi=""
+  [ -n "${FRESH:-}" ] || raspi="Host raspi
+    HostName $RASPI_HOST
+    Port $PORT
+    User pi
+    IdentityFile ~/.ssh/id_ed25519
+"
   cat > "$STAGE/.ssh/config" <<EOF
 # ~/.ssh/config - the file essh reads, and the only place it writes hosts.
 
@@ -124,12 +103,7 @@ Host db-primary
     User postgres
     ProxyJump bastion
 
-Host raspi
-    HostName $RASPI_HOST
-    Port $RASPI_PORT
-    User $RASPI_USER
-    IdentityFile $RASPI_KEY
-
+${raspi}
 Host nas
     HostName ${UP_ADDRS[5]}
     Port $PORT
@@ -175,6 +149,7 @@ start_listeners() {
   # Their output goes to /dev/null: a background child holding this script's
   # stdout open makes `./stage.sh up | anything` hang forever.
   for addr in "${UP_ADDRS[@]}"; do
+    [ "$addr" = "$RASPI_HOST" ] && continue
     python3 -c "
 import socket, time
 s = socket.socket()
@@ -185,18 +160,63 @@ time.sleep(86400)
 " > /dev/null 2>&1 &
     echo $! >> "$PIDS"
   done
-  # The demo tape opens a forward on 5432 and shows ssh refusing it, so the rig
-  # is what makes that true: without a listener here the beat only happens on a
-  # machine that already runs postgres, which is the opposite of reproducible.
-  # A bind that fails because the port really is taken is the same picture.
-  python3 -c "
-import socket, time
-s = socket.socket()
-s.bind(('127.0.0.1', 5432))
-s.listen(16)
-time.sleep(86400)
-" > /dev/null 2>&1 &
-  echo $! >> "$PIDS"
+}
+
+# ssh takes its config, its known_hosts and every `~` from the passwd home,
+# never from $HOME, so without this every `ssh raspi` essh starts would read the
+# renderer's own ~/.ssh. The wrapper hands ssh a copy of the staged config with
+# `~/` spelled out as the stage, made fresh each time so a host essh just added
+# is in it. It sits first on the staged PATH, where essh and sshfs both find it,
+# and `exec` leaves ssh's own argv for the tunnel check to read.
+write_ssh_wrapper() {
+  mkdir -p "$BIN" "$STAGE/.sshd"
+  cat > "$BIN/ssh" <<EOF
+#!/bin/sh
+cfg="$STAGE/.sshd/ssh_config.\$\$"
+sed "s|~/|$STAGE/|g" "$STAGE/.ssh/config" > "\$cfg"
+exec /usr/bin/ssh -F "\$cfg" -o UserKnownHostsFile="$STAGE/.ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null "\$@"
+EOF
+  chmod +x "$BIN/ssh"
+}
+
+# The sshd behind `raspi`: pubkey only, forwarding and sftp on, and a home with
+# something in it for the mount to show. Its host key is made here, so the
+# staged known_hosts vouches for it and no host-key prompt reaches a frame.
+# `fresh` starts it like a new machine instead: no key installed, and the
+# password `raspberry` accepted until `ssh-copy-id` puts one there.
+start_sshd() {
+  [ -n "$CENGINE" ] || { echo "no podman: raspi will not answer, so login, tunnel and mount fail" >&2; return 0; }
+  local ctx="$STAGE/.sshd"
+  mkdir -p "$ctx"
+  cat > "$ctx/Containerfile" <<'IMG'
+FROM docker.io/library/alpine:3.20
+RUN apk add --no-cache openssh-server bash \
+ && adduser -D -s /bin/bash pi && echo 'pi:raspberry' | chpasswd \
+ && mkdir -p /home/pi/.ssh /home/pi/backups /home/pi/photos /home/pi/scripts \
+ && printf 'grocery run saturday\n' > /home/pi/notes.md \
+ && printf 'services:\n  pihole:\n    image: pihole/pihole\n' > /home/pi/docker-compose.yml \
+ && chown -R pi:pi /home/pi && chmod 700 /home/pi/.ssh \
+ && printf '%s\n' 'PS1="\u@\h:\w\$ "' > /etc/profile.d/prompt.sh && : > /etc/motd \
+ && printf '%s\n' 'Port 22' 'HostKey /etc/ssh/ssh_host_ed25519_key' 'PermitRootLogin no' \
+      'PasswordAuthentication no' 'KbdInteractiveAuthentication no' \
+      'AuthorizedKeysFile .ssh/authorized_keys' 'AllowTcpForwarding yes' \
+      'Subsystem sftp internal-sftp' 'PrintMotd no' > /etc/ssh/sshd_config
+CMD ["/usr/sbin/sshd", "-D", "-e"]
+IMG
+  "$CENGINE" build -q -t "$IMAGE" "$ctx" > /dev/null
+  ssh-keygen -q -t ed25519 -N '' -C raspi -f "$ctx/host_key"
+  echo "[$RASPI_HOST]:$PORT $(cut -d' ' -f1,2 "$ctx/host_key.pub")" > "$STAGE/.ssh/known_hosts"
+  "$CENGINE" rm -f "$CONTAINER" > /dev/null 2>&1 || true
+  local keys=(-v "$STAGE/.ssh/id_ed25519.pub:/home/pi/.ssh/authorized_keys:ro")
+  local sshd=()
+  if [ -n "${FRESH:-}" ]; then
+    keys=()
+    sshd=(/usr/sbin/sshd -D -e -o PasswordAuthentication=yes)
+  fi
+  "$CENGINE" run -d --name "$CONTAINER" --hostname raspi \
+    -p "$RASPI_HOST:$PORT:22" \
+    -v "$ctx/host_key:/etc/ssh/ssh_host_ed25519_key:ro" \
+    "${keys[@]}" "$IMAGE" "${sshd[@]}" > /dev/null
 }
 
 seed_history() {
@@ -208,7 +228,7 @@ seed_history() {
   {
     echo "$((now - 720))     41 web01"
     echo "$((now - 10800))   18 db-primary"
-    echo "$((now - 172800))   7 raspi"
+    [ -n "${FRESH:-}" ] || echo "$((now - 172800))   7 raspi"
     echo "$((now - 518400))  23 bastion"
     echo "$((now - 2073600))  4 nas"
     echo "$((now - 5443200))  2 staging"
@@ -217,9 +237,7 @@ seed_history() {
 
 seed_tunnels() {
   # A saved forward is a line in a config file, not a process, so the list is
-  # real without anything running: three named ones, all off. A tunnel that is
-  # actually up needs a server that really speaks ssh, which is what
-  # ESSH_DEMO_HOST is for.
+  # real without anything running: three named ones, all off.
   local cfg="$STAGE/.config/easyssh"
   mkdir -p "$cfg"
   cat > "$cfg/tunnels" <<'ROWS'
@@ -247,6 +265,8 @@ up() {
   mkdir -p "$STAGE/.cargo" && : > "$STAGE/.cargo/env"
   start_agent
   start_listeners
+  write_ssh_wrapper
+  start_sshd
   seed_history
   seed_tunnels
   echo "staged in $STAGE"
@@ -254,13 +274,6 @@ up() {
   echo "  ./stage.sh run    open the toolbox against it"
   echo "  ./stage.sh shell  a shell where essh is this build"
   echo "  ./stage.sh down   tear it all down"
-  echo
-  if [ -n "${ESSH_DEMO_HOST:-}" ]; then
-    echo "raspi points at your ESSH_DEMO_HOST, so mounts and tunnels work."
-  else
-    echo "ESSH_DEMO_HOST is unset, so every host is fake and the mount and"
-    echo "tunnel scenes will fail. See the header of this script."
-  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -310,6 +323,7 @@ assert_safe_to_delete() {
 }
 
 down_quiet() {
+  [ -n "$CENGINE" ] && "$CENGINE" rm -f "$CONTAINER" > /dev/null 2>&1 || true
   if [ -f "$PIDS" ]; then
     while read -r pid; do
       [ -n "$pid" ] && kill "$pid" 2> /dev/null || true
@@ -353,6 +367,7 @@ open_shell() {
 
 case "${1:-up}" in
   up)    up ;;
+  fresh) FRESH=1 up ;;
   # Run from inside the staged home: a mountpoint defaults to `./sshfs/<host>`
   # relative to the working directory, and running from here would put this
   # script's own path on screen.
@@ -360,5 +375,5 @@ case "${1:-up}" in
   shell) open_shell ;;
   ls)    env -i $(env_for_stage) "$ESSH" ls -v ;;
   down)  down_quiet; echo "torn down" ;;
-  *)     echo "usage: $0 [up|run|shell|ls|down]" >&2; exit 2 ;;
+  *)     echo "usage: $0 [up|fresh|run|shell|ls|down]" >&2; exit 2 ;;
 esac

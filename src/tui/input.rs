@@ -175,7 +175,11 @@ impl App {
             KeyCode::Char('r') => {
                 self.settings = crate::settings::load();
                 self.apply_settings();
-                self.set_status(format!("reloaded {}", crate::settings::path().display()));
+                let path = crate::settings::path();
+                self.set_status(format!(
+                    "reloaded {}",
+                    crate::sshcfg::collapse_tilde(&path.to_string_lossy())
+                ));
                 None
             }
             _ => None,
@@ -447,13 +451,15 @@ impl App {
                         // a dir that had real content is left untouched.
                         let _ = fs::remove_dir(&local);
                         self.refresh_mounts();
-                        self.set_status(format!("fusermount -u {local}: unmounted"));
+                        let shown = crate::sshcfg::collapse_tilde(&local);
+                        self.set_status(format!("fusermount -u {shown}: unmounted"));
                     }
                     Err(e) => {
                         self.confirm = Some(Confirm::new(
                             "unmount failed",
                             format!(
-                                "{local}: {e}. Something is still using it (a shell cd'd in, or an open file). Force a lazy unmount (fusermount -u -z)? It detaches now and the kernel frees it once nothing uses it."
+                                "{}: {e}. Something is still using it (a shell cd'd in, or an open file). Force a lazy unmount (fusermount -u -z)? It detaches now and the kernel frees it once nothing uses it.",
+                                crate::sshcfg::collapse_tilde(&local)
                             ),
                             ConfirmAction::LazyUnmount { local },
                         ));

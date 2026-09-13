@@ -315,7 +315,11 @@ impl App {
                 }
                 let local = spec.local.clone();
                 if let Err(e) = fs::create_dir_all(&local) {
-                    self.set_failed(format!("mount: cannot create {local}: {e}"));
+                    self.set_failed(format!(
+                        "mount: cannot create {}: {} - pick another folder, or change Mount folder in Settings",
+                        crate::sshcfg::collapse_tilde(&local),
+                        e.kind()
+                    ));
                     return None;
                 }
                 // Jump to the Mounts tab so the result (success or empty) is

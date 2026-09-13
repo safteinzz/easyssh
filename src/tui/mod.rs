@@ -251,6 +251,8 @@ impl App {
         self.refresh_keys();
         self.refresh_tunnels();
         self.refresh_mounts();
+        let n = self.settings_rows().len();
+        Self::clamp(&mut self.settings_state, n);
     }
 
     pub(super) fn refresh_hosts(&mut self) {

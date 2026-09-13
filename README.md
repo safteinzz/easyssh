@@ -1,4 +1,4 @@
-# easyssh
+# easyssh (`essh`)
 
 > **Canonical:** [gitlab.com/safteinzz/easyssh](https://gitlab.com/safteinzz/easyssh) · **Mirror:** [github.com/safteinzz/easyssh](https://github.com/safteinzz/easyssh)
 
@@ -16,65 +16,82 @@ essh self update  # install the latest
 
 No cargo yet? Rust installs the same way on every distro: [rustup.rs](https://rustup.rs).
 
-![essh: finding a host, mounting it, opening a port forward, changing a default and connecting](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/demo.gif)
-
 ## Browse and connect
 
-Bare `essh` opens a toolbox over your `~/.ssh/config`. A dot says whether each
-host's ssh port answers, `/` filters as you type, and the panel answers the rest.
+![The host list, a new machine added as raspi with the form, its key installed with ssh-copy-id and the password typed that once, then a login on the key alone](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/connect.gif)
 
-![Hosts tab: the list, the up/down dots and the detail panel](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/hosts.png)
+Legend: green answered on its ssh port, red did not, `○` still checking; `◆` is
+a host behind a jump, coloured by whether the jump answered.
 
-## The command, built for you
+```bash
+essh                 # the toolbox, over your ~/.ssh/config
+essh raspi           # straight in, like ssh
+essh raspi uptime    # anything after the host goes to ssh
+```
 
-Every wizard shows the exact command it will run, live, as you type - here the
-`sshfs` invocation nobody remembers.
-
-![Mount wizard over the Hosts tab, showing the live sshfs command](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/wizard-mount.png)
+Every host in your `~/.ssh/config`, where it points, whether it answers and when
+you last went in, with the rest in the panel. `c` adds a host and `e` edits one,
+written into `~/.ssh/config` itself, backed up first; `ctrl-o` in the form picks
+a key you already have. `Y` on the Keys tab installs it on the new machine with
+`ssh-copy-id`, and from then on Enter is all it takes.
 
 ## Keep the forwards you use
 
-A port forward is a background `ssh -N` with no window and nothing to close. Here
-every one you open is kept, and each row says what it actually does - `raspi:80 →
-8080` - without your having to name it. `↵` turns one on and off, `e` rewrites it,
-`d` stops it and deletes it once stopped, and the list is
-`~/.config/easyssh/tunnels` as `-L spec host` lines you can keep in your dotfiles.
-Type a name in the wizard only when you want the row to say *why* it exists.
+![A port forward made from raspi's row, the form building the ssh -N -L line as it is typed, then running on the Tunnels tab and switched off and back on](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/tunnels.gif)
 
-![Tunnels tab with a forward selected and what it reaches](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/tunnels.png)
+A port forward is a background `ssh -N` with no window and nothing to close.
+`t` on a host opens one (`T` the other way, `-R`), and the form shows the line
+it will run as you type. Each row says what it does without your naming it,
+`↵` turns one off and on, `e` rewrites it, `d` stops it and deletes it once
+stopped.
 
-## Manage keys
-
-Type, fingerprint, comment, whether the agent already holds it and whether it
-will ask for a passphrase. `c` makes one, `y` copies it to a host.
-
-![Keys tab showing the agent and passphrase columns](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/keys.png)
+The list is `~/.config/easyssh/tunnels`, one `-L spec host` line each, so it can
+live in your dotfiles.
 
 ## Mount a remote folder
 
-`sshfs` makes a remote directory a local one, and then you forget the
-`fusermount -u` on the way out. `d` does it, and cleans the mountpoint up.
+![The mount form on raspi showing the sshfs command it will run, the mount appearing on the Mounts tab, raspi's home listed from the shell like any folder, then unmounting it](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/mount.gif)
 
-![Mounts tab with a mount selected, its source, access and options](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/mounts.png)
+`m` on a host shows the `sshfs` line it will run, and the mount lands on the
+Mounts tab as an ordinary folder, `~/sshfs/raspi` here. `sshfs` makes a remote directory a local one, and then you forget
+the `fusermount -u` on the way out: `d` does it, and cleans the mountpoint up.
+
+## Manage keys
+
+![Keys tab showing the agent and passphrase columns](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/keys.png)
+
+Type, fingerprint, comment, whether the agent already holds it and whether it
+will ask for a passphrase. `c` makes one, `y` copies it, `Y` installs it on a
+host.
 
 ## Your defaults, not mine
+
+![Settings tab, grouped into behaviour and defaults](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/settings.png)
 
 Where mounts land, whether ssh ports get checked, host order, what runs a login,
 the remote sftp-server path. `↵` changes one, `d` puts it back, and it saves to
 `~/.config/easyssh/settings` as `key = value` lines you can keep in your dotfiles.
 
-![Settings tab, grouped into behaviour and defaults](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/settings.png)
-
 ## Commands
 
-The handful of things faster to type than to click.
-
-```sh
-essh                 # open the toolbox (TUI)
-essh <host> [args]   # connect - any unknown word is an ssh destination
+```bash
 essh ls [-v]         # list hosts from ~/.ssh/config (-v adds target, key, jump)
 essh cp <src> <dst>  # scp with alias:path shorthand and auto -r for dirs
 ```
+
+`essh --help` and `essh <command> --help` have the rest.
+
+## Keys
+
+| key | does |
+| --- | --- |
+| `j` `k` / `↑` `↓` | move in the list |
+| `h` `l` / `←` `→` / `Tab` | switch tab |
+| `/` | filter the list; `Enter` keeps it, `Esc` drops it |
+| `?` | every key, on every tab |
+| `q` / `Ctrl-C` | quit |
+
+Each tab's own keys are on its bottom line, and `?` lists them all.
 
 ## Notes
 

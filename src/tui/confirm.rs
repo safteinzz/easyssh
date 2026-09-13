@@ -141,7 +141,10 @@ impl App {
                 Ok(_) => {
                     let _ = fs::remove_dir(&local);
                     self.refresh_mounts();
-                    self.set_status(format!("fusermount -u -z {local}: lazy-unmounted"));
+                    self.set_status(format!(
+                        "fusermount -u -z {}: lazy-unmounted",
+                        crate::sshcfg::collapse_tilde(&local)
+                    ));
                 }
                 Err(e) => self.set_failed(format!("lazy unmount failed: {e}")),
             },
