@@ -166,6 +166,7 @@ fn app_with_host() -> App {
         identity: None,
         proxy_jump: None,
         remote_command: None,
+        forward_agent: None,
     }];
     app.host_state.select(Some(0));
     app
@@ -470,8 +471,9 @@ fn mount_rights_cycle_with_h_and_l() {
     assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 1);
     app.on_key(press(KeyCode::Char('h')));
     assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 0);
-    app.on_key(press(KeyCode::Left)); // wraps back round
-    assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 1);
+    // Two options are buttons, so an arrow stops at the edge.
+    app.on_key(press(KeyCode::Left));
+    assert_eq!(app.prompt.as_ref().unwrap().fields[2].choice, 0);
     // h/l are the answer here, never typed text.
     assert!(app.prompt.as_ref().unwrap().fields[2].value.is_empty());
 }
@@ -581,6 +583,7 @@ fn slash_filters_the_list_and_esc_restores_it() {
             identity: None,
             proxy_jump: None,
             remote_command: None,
+            forward_agent: None,
         })
         .collect();
     app.host_state.select(Some(0));
@@ -614,6 +617,7 @@ fn a_filtered_selection_acts_on_the_row_you_can_see() {
             identity: None,
             proxy_jump: None,
             remote_command: None,
+            forward_agent: None,
         })
         .collect();
     app.host_state.select(Some(0));

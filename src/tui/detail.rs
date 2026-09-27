@@ -69,6 +69,19 @@ fn host_lines(app: &App) -> Vec<Line<'static>> {
         ("Key", h.identity.clone()),
         ("Via", h.proxy_jump.clone()),
         ("Runs", h.remote_command.clone()),
+        (
+            "Agent",
+            h.forward_agent
+                .clone()
+                .filter(|a| !a.eq_ignore_ascii_case("no"))
+                .map(|a| {
+                    if a.eq_ignore_ascii_case("yes") {
+                        "forwarded".into()
+                    } else {
+                        a
+                    }
+                }),
+        ),
     ] {
         if let Some(v) = value.filter(|v| !v.is_empty()) {
             lines.push(row(label, v));

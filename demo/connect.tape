@@ -67,6 +67,7 @@ Sleep 1.2s
 Enter
 Enter
 Enter
+Enter
 Sleep 2s
 
 # ---- give it the key, with the password this one time --------------------

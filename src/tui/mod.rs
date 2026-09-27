@@ -50,7 +50,7 @@ mod widgets;
 mod wizard;
 
 use confirm::Confirm;
-use connect::changed_host_key;
+use connect::diagnose;
 use detail::render_detail;
 use mount_spec::{MountSpec, shell_join};
 use picker::Picker;
@@ -622,14 +622,15 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
         if let Some(run) = app.on_key(key) {
             let status = run_suspended(terminal, &run.argv)?;
 
-            // A connect that fails with 255 may be a changed host key, which ssh
-            // prints then wipes when we redraw. Probe non-interactively and, if so,
-            // offer the fix in a modal instead of a status that flashes past.
+            // ssh prints why a login failed and we wipe it when we redraw, so a
+            // 255 is probed again non-interactively and explained in a box.
             let failed_255 = matches!(status, Some(ref s) if s.code() == Some(255));
+            let mut explained = false;
             if let Some(host) = run.connect.clone() {
                 if failed_255 {
-                    if let Some(target) = changed_host_key(&host) {
-                        app.offer_known_hosts_fix(&host, target);
+                    if let Some((d, said)) = diagnose(&host) {
+                        app.explain_connect_failure(&host, d, &said);
+                        explained = true;
                     }
                 } else {
                     // A connect that got as far as a session is what makes a
@@ -640,6 +641,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             }
 
             match status {
+                _ if explained => {}
                 Some(s) if s.success() => app.set_status(format!("{} ✓", run.label)),
                 // It ran and came back non-zero: the program printed its own
                 // reason on the screen we then drew over, but the exit code on

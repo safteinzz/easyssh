@@ -189,3 +189,20 @@ fn fingerprint(pubpath: &PathBuf) -> (String, String) {
         _ => (String::new(), String::new()),
     }
 }
+
+/// Whether `path` holds a public key: named `*.pub`, or a one-line
+/// `<type> <base64>` body, which is what ssh cannot log in with.
+pub fn is_public_key(path: &Path) -> bool {
+    if path.extension().is_some_and(|e| e == "pub") {
+        return true;
+    }
+    // A key is a few kilobytes; anything bigger is not one, so it is not read.
+    if fs::metadata(path).map_or(true, |m| m.len() > 64 * 1024) {
+        return false;
+    }
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let first = text.split_whitespace().next().unwrap_or("");
+    ["ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-"]
+        .iter()
+        .any(|p| first.starts_with(p))
+}

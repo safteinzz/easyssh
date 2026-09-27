@@ -28,6 +28,8 @@ pub struct Host {
     /// box, `tmux a` on a workhorse). ssh refuses a command line on top of one,
     /// so a host that sets this can only be connected to bare.
     pub remote_command: Option<String>,
+    /// `ForwardAgent`: `yes`, `no`, or a socket path ssh hands the far side.
+    pub forward_agent: Option<String>,
 }
 
 impl Host {
@@ -88,6 +90,7 @@ pub fn first_hop(host: &Host, all: &[Host]) -> Option<(String, u16)> {
 
 /// Fields the add-host wizard collects. Empty strings mean "not set" and are
 /// omitted from the written block.
+#[derive(Clone)]
 pub struct NewHost {
     pub alias: String,
     pub hostname: String,
@@ -96,6 +99,9 @@ pub struct NewHost {
     pub identity: String,
     pub proxy_jump: String,
     pub remote_command: String,
+    /// The form's answer (`no`, `yes` or a socket path). Written only where it
+    /// changes what ssh would do, so an untouched toggle never adds a line.
+    pub forward_agent: String,
 }
 
 /// `~/.ssh`, honoring $HOME. Everything hangs off here.
@@ -163,6 +169,7 @@ fn merge_hosts(parsed: Vec<Host>) -> Vec<Host> {
             e.identity = e.identity.take().or(h.identity);
             e.proxy_jump = e.proxy_jump.take().or(h.proxy_jump);
             e.remote_command = e.remote_command.take().or(h.remote_command);
+            e.forward_agent = e.forward_agent.take().or(h.forward_agent);
         } else {
             merged.push(h);
         }
@@ -194,6 +201,44 @@ pub fn forces_command(alias: &str) -> bool {
         })
 }
 
+/// What ssh would use for `alias`'s ForwardAgent given config `text`: the first
+/// value from any block whose pattern matches, `no` when none sets it.
+fn effective_forward_agent(text: &str, alias: &str) -> String {
+    let mut parsed = Vec::new();
+    parse_lines(text, true, &mut parsed);
+    parsed
+        .into_iter()
+        .filter(|h| wildmatch(&h.alias, alias))
+        .find_map(|h| h.forward_agent)
+        .unwrap_or_else(|| "no".into())
+}
+
+/// The ForwardAgent ssh would use for `alias` with the config as it is now.
+pub fn forward_agent_for(alias: &str) -> String {
+    let text = fs::read_to_string(config_path()).unwrap_or_default();
+    effective_forward_agent(&text, alias)
+}
+
+/// ssh_config's `*` and `?` against one name. A negated pattern matches
+/// nothing here, since on its own it only ever excludes.
+fn wildmatch(pattern: &str, name: &str) -> bool {
+    fn go(p: &[char], n: &[char]) -> bool {
+        match (p.first(), n.first()) {
+            (None, None) => true,
+            (Some('*'), _) => go(&p[1..], n) || (!n.is_empty() && go(p, &n[1..])),
+            (Some('?'), Some(_)) => go(&p[1..], &n[1..]),
+            (Some(a), Some(b)) if a == b => go(&p[1..], &n[1..]),
+            _ => false,
+        }
+    }
+    if pattern.starts_with('!') {
+        return false;
+    }
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    go(&p, &n)
+}
+
 /// True for aliases that are match patterns rather than concrete hosts.
 fn is_pattern(alias: &str) -> bool {
     alias.contains('*') || alias.contains('?') || alias.contains('!')
@@ -220,6 +265,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
     let mut identity = None;
     let mut proxy_jump = None;
     let mut remote_command = None;
+    let mut forward_agent = None;
 
     // Closure-free flush would need to borrow all the locals mutably; a small
     // helper macro keeps the loop readable without fighting the borrow checker.
@@ -236,6 +282,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
                     identity: identity.clone(),
                     proxy_jump: proxy_jump.clone(),
                     remote_command: remote_command.clone(),
+                    forward_agent: forward_agent.clone(),
                 });
             }
         };
@@ -261,6 +308,7 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
                 identity = None;
                 proxy_jump = None;
                 remote_command = None;
+                forward_agent = None;
                 aliases = value.split_whitespace().map(str::to_string).collect();
             }
             "include" => {
@@ -273,19 +321,30 @@ fn parse_lines(text: &str, follow_includes: bool, out: &mut Vec<Host>) {
                     }
                 }
             }
+            // What follows a `Match` applies only when its condition holds, so
+            // none of it belongs to the Host block above.
+            "match" => flush!(),
             _ if aliases.is_empty() => {} // settings before any Host line: ignore
-            "hostname" => hostname = Some(value.to_string()),
-            "user" => user = Some(value.to_string()),
-            "port" => port = Some(value.to_string()),
-            "identityfile" => identity = Some(value.to_string()),
-            "proxyjump" => proxy_jump = Some(value.to_string()),
+            // ssh takes the first value in a block, the same as across blocks.
+            "hostname" => set_once(&mut hostname, value),
+            "user" => set_once(&mut user, value),
+            "port" => set_once(&mut port, value),
+            "identityfile" => set_once(&mut identity, value),
+            "proxyjump" => set_once(&mut proxy_jump, value),
             // The value runs to the end of the line, which `split_kv` already
             // gives us: `RemoteCommand tmux a -t work` is one command, not four.
-            "remotecommand" => remote_command = Some(value.to_string()),
+            "remotecommand" => set_once(&mut remote_command, value),
+            "forwardagent" => set_once(&mut forward_agent, value),
             _ => {}
         }
     }
     flush!();
+}
+
+fn set_once(slot: &mut Option<String>, value: &str) {
+    if slot.is_none() {
+        *slot = Some(value.to_string());
+    }
 }
 
 /// Split a config line into (keyword, value), accepting either whitespace or an
@@ -378,16 +437,62 @@ pub fn update_host(original: &str, h: &NewHost) -> Result<()> {
     Ok(())
 }
 
+/// Add `key value` after the last setting of `alias`'s own block. `Ok(false)`
+/// when the block already sets `key`, so nothing changed; refused for a shared
+/// `Host a b` block, as edits are.
+pub fn add_option(alias: &str, key: &str, value: &str) -> Result<bool> {
+    add_option_in(&config_path(), alias, key, value)
+}
+
 /// Remove the block that defines `alias` (sole alias only).
 pub fn delete_host(alias: &str) -> Result<()> {
     delete_host_in(&config_path(), alias)
 }
 
 fn add_host_in(cfg: &Path, h: &NewHost) -> Result<()> {
+    let text = fs::read_to_string(cfg).unwrap_or_default();
+    // A new host has no line of its own yet, so `no` is left to ssh's default
+    // and anything else is written only where the config would not already say it.
+    let wanted = h.forward_agent.trim();
+    let agent = if wanted.eq_ignore_ascii_case("no")
+        || wanted.eq_ignore_ascii_case(&effective_forward_agent(&text, h.alias.trim()))
+    {
+        String::new()
+    } else {
+        wanted.to_string()
+    };
+    let h = &NewHost {
+        forward_agent: agent,
+        ..h.clone()
+    };
+    let out = added_text(text, h);
+    check_forward_agent(cfg, &out, h)?;
     if cfg.exists() {
         backup(cfg)?;
     }
-    let text = fs::read_to_string(cfg).unwrap_or_default();
+    fs::write(cfg, out).with_context(|| format!("writing {}", cfg.display()))
+}
+
+/// Refuse a write whose ForwardAgent line an earlier block would override,
+/// since saving it would report a change ssh never makes.
+fn check_forward_agent(cfg: &Path, text: &str, h: &NewHost) -> Result<()> {
+    let wanted = h.forward_agent.trim();
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let got = effective_forward_agent(text, h.alias.trim());
+    if !got.eq_ignore_ascii_case(wanted) {
+        bail!(
+            "an earlier block in {} sets ForwardAgent {got} for '{}': change it there",
+            collapse_tilde(&cfg.to_string_lossy()),
+            h.alias.trim()
+        );
+    }
+    Ok(())
+}
+
+/// The config `text` with `h` added, as `add_host_in` decides where it goes.
+fn added_text(text: String, h: &NewHost) -> String {
     let identity = h.identity.trim();
 
     // If exactly one shared block already points that key at 2+ hosts, join it:
@@ -410,10 +515,11 @@ fn add_host_in(cfg: &Path, h: &NewHost) -> Result<()> {
                 identity: String::new(),
                 proxy_jump: h.proxy_jump.clone(),
                 remote_command: h.remote_command.clone(),
+                forward_agent: h.forward_agent.clone(),
             };
             body.push('\n');
             body.push_str(&render_block(&per_host));
-            return fs::write(cfg, body).with_context(|| format!("writing {}", cfg.display()));
+            return body;
         }
     }
 
@@ -424,7 +530,7 @@ fn add_host_in(cfg: &Path, h: &NewHost) -> Result<()> {
     }
     out.push('\n'); // blank line separates the new block from what precedes it
     out.push_str(&render_block(h));
-    fs::write(cfg, out).with_context(|| format!("writing {}", cfg.display()))
+    out
 }
 
 /// The `Host`-line index of the single shared block (2+ concrete aliases) whose
@@ -475,20 +581,143 @@ fn unique_group_block_for_identity(lines: &[&str], identity: &str) -> Option<usi
 fn update_host_in(cfg: &Path, original: &str, h: &NewHost) -> Result<()> {
     let text = fs::read_to_string(cfg).with_context(|| format!("reading {}", cfg.display()))?;
     let lines: Vec<&str> = text.lines().collect();
-    match sole_block_range(&lines, original) {
-        BlockFind::None => bail!("no host '{original}' in {}", cfg.display()),
-        BlockFind::Shared => bail!(
-            "'{original}' shares a Host block with other aliases - edit {} by hand",
-            cfg.display()
-        ),
-        BlockFind::Range(s, e) => {
-            backup(cfg)?;
-            let mut out: Vec<String> = lines[..s].iter().map(|l| l.to_string()).collect();
-            out.extend(render_block_lines(h));
-            out.extend(lines[e..].iter().map(|l| l.to_string()));
-            write_lines(cfg, &out)
+    let (s, e) = own_block(cfg, &lines, original)?;
+    let mut body: Vec<String> = lines[s + 1..e].iter().map(|l| l.to_string()).collect();
+    let had_command = body.iter().any(|l| key_of(l) == "remotecommand");
+    for (key, val) in [
+        ("HostName", &h.hostname),
+        ("User", &h.user),
+        ("Port", &h.port),
+        ("IdentityFile", &h.identity),
+        ("ProxyJump", &h.proxy_jump),
+        ("RemoteCommand", &h.remote_command),
+    ] {
+        set_key(&mut body, key, val.trim());
+    }
+    let has_tty = body.iter().any(|l| key_of(l) == "requesttty");
+    if !h.remote_command.trim().is_empty() && !has_tty {
+        set_key(&mut body, "RequestTTY", "yes");
+    }
+    // Only the `yes` we wrote beside a RemoteCommand leaves with it.
+    if h.remote_command.trim().is_empty() && had_command {
+        body.retain(|l| !(key_of(l) == "requesttty" && split_kv(l.trim()).1.trim() == "yes"));
+    }
+    // A toggle left where ssh already has it touches nothing, so a `no` the
+    // user wrote survives an edit.
+    let wanted = h.forward_agent.trim();
+    let changed = !wanted.eq_ignore_ascii_case(&effective_forward_agent(&text, original));
+    if changed {
+        set_key(&mut body, "ForwardAgent", wanted);
+    }
+
+    let mut out: Vec<String> = lines[..s].iter().map(|l| l.to_string()).collect();
+    out.push(if h.alias.trim() == original {
+        lines[s].to_string()
+    } else {
+        format!("Host {}", h.alias.trim())
+    });
+    out.extend(body);
+    out.extend(lines[e..].iter().map(|l| l.to_string()));
+    if changed {
+        let written = NewHost {
+            forward_agent: wanted.to_string(),
+            ..h.clone()
+        };
+        check_forward_agent(cfg, &out.join("\n"), &written)?;
+    }
+    backup(cfg)?;
+    write_lines(cfg, &out)
+}
+
+/// The range of the block that is `alias`'s alone, or the error that says why
+/// there is none to edit.
+fn own_block(cfg: &Path, lines: &[&str], alias: &str) -> Result<(usize, usize)> {
+    let path = collapse_tilde(&cfg.to_string_lossy());
+    match sole_block_range(lines, alias) {
+        BlockFind::None => bail!("no host '{alias}' in {path}"),
+        BlockFind::Shared => {
+            bail!("'{alias}' shares a Host block with other aliases: edit {path} by hand")
+        }
+        BlockFind::Range(s, e) => Ok((s, e)),
+    }
+}
+
+/// The lowercased keyword of a config line, empty for a blank or a comment.
+fn key_of(line: &str) -> String {
+    let t = line.trim();
+    if t.is_empty() || t.starts_with('#') {
+        return String::new();
+    }
+    split_kv(t).0.to_ascii_lowercase()
+}
+
+/// Set `key` in a block body in place. The first line with it is rewritten
+/// only if its value differs; an absent key is added after the last setting,
+/// so a trailing comment about the next block stays where it was. A blank
+/// value removes the key, except that only the first `IdentityFile` goes,
+/// since ssh tries every one and the form shows only the first.
+fn set_key(body: &mut Vec<String>, key: &str, val: &str) {
+    let lc = key.to_ascii_lowercase();
+    let at: Vec<usize> = (0..body.len())
+        .filter(|&i| key_of(&body[i]) == lc)
+        .collect();
+    if val.is_empty() {
+        let doomed: &[usize] = if lc == "identityfile" {
+            &at[..at.len().min(1)]
+        } else {
+            &at
+        };
+        for &i in doomed.iter().rev() {
+            body.remove(i);
+        }
+        return;
+    }
+    let indent = body
+        .iter()
+        .find(|l| !key_of(l).is_empty())
+        .map(|l| l[..l.len() - l.trim_start().len()].to_string())
+        .unwrap_or_else(|| "    ".into());
+    match at.first() {
+        Some(&i) if split_kv(body[i].trim()).1.trim() == val => {}
+        Some(&i) => body[i] = format!("{indent}{key} {val}"),
+        None => {
+            let after = body
+                .iter()
+                .rposition(|l| !key_of(l).is_empty())
+                .map_or(0, |i| i + 1);
+            body.insert(after, format!("{indent}{key} {val}"));
         }
     }
+}
+
+/// Whether `alias`'s own block sets `key` at all.
+pub fn sets_option(alias: &str, key: &str) -> bool {
+    let text = fs::read_to_string(config_path()).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let lc = key.to_ascii_lowercase();
+    match sole_block_range(&lines, alias) {
+        BlockFind::Range(s, e) => lines[s + 1..e].iter().any(|l| key_of(l) == lc),
+        _ => false,
+    }
+}
+
+/// `add_option` on an explicit file. `Ok(false)` when the block already set it.
+fn add_option_in(cfg: &Path, alias: &str, key: &str, value: &str) -> Result<bool> {
+    let text = fs::read_to_string(cfg).with_context(|| format!("reading {}", cfg.display()))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let (s, e) = own_block(cfg, &lines, alias)?;
+    let mut body: Vec<String> = lines[s + 1..e].iter().map(|l| l.to_string()).collect();
+    let lc = key.to_ascii_lowercase();
+    if body.iter().any(|l| key_of(l) == lc) {
+        return Ok(false);
+    }
+    set_key(&mut body, key, value);
+    backup(cfg)?;
+    let mut out: Vec<String> = lines[..=s].iter().map(|l| l.to_string()).collect();
+    out.extend(body);
+    out.extend(lines[e..].iter().map(|l| l.to_string()));
+    write_lines(cfg, &out)?;
+    Ok(true)
 }
 
 fn delete_host_in(cfg: &Path, alias: &str) -> Result<()> {
@@ -543,6 +772,7 @@ fn render_block_lines(h: &NewHost) -> Vec<String> {
         ("IdentityFile", &h.identity),
         ("ProxyJump", &h.proxy_jump),
         ("RemoteCommand", &h.remote_command),
+        ("ForwardAgent", &h.forward_agent),
     ] {
         let val = val.trim();
         if !val.is_empty() {
@@ -902,6 +1132,7 @@ Host alpha beta
             identity: String::new(),
             proxy_jump: "bastion".into(),
             remote_command: String::new(),
+            forward_agent: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
@@ -932,6 +1163,7 @@ Host alpha beta
             identity: String::new(),
             proxy_jump: String::new(),
             remote_command: String::new(),
+            forward_agent: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let hosts = parse_str(&fs::read_to_string(&cfg).unwrap());
@@ -955,6 +1187,7 @@ Host alpha beta
             identity: "~/.ssh/id_fleet".into(),
             proxy_jump: String::new(),
             remote_command: String::new(),
+            forward_agent: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
@@ -990,6 +1223,7 @@ Host alpha beta
             identity: "~/.ssh/id_fleet".into(),
             proxy_jump: String::new(),
             remote_command: String::new(),
+            forward_agent: String::new(),
         };
         add_host_in(&cfg, &nh).unwrap();
         let text = fs::read_to_string(&cfg).unwrap();
@@ -1034,6 +1268,7 @@ Host alpha beta
             identity: String::new(),
             proxy_jump: String::new(),
             remote_command: String::new(),
+            forward_agent: String::new(),
         };
         update_host_in(&cfg, "a", &nh).unwrap();
         let hosts = parse_str(&fs::read_to_string(&cfg).unwrap());
@@ -1051,5 +1286,111 @@ Host alpha beta
             "sibling block must survive"
         );
         fs::remove_file(&cfg).ok();
+    }
+
+    /// A config inside a directory of its own, so the backups an edit writes
+    /// beside it go when the directory does.
+    fn cfg_in_temp_dir(body: &str) -> (PathBuf, PathBuf) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("easyssh-test-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config");
+        fs::write(&cfg, body).unwrap();
+        (dir, cfg)
+    }
+
+    fn edit_of(alias: &str) -> NewHost {
+        NewHost {
+            alias: alias.into(),
+            hostname: String::new(),
+            user: String::new(),
+            port: String::new(),
+            identity: String::new(),
+            proxy_jump: String::new(),
+            remote_command: String::new(),
+            forward_agent: "no".into(),
+        }
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_leaves_the_file_as_it_was() {
+        let body = "Host prod\n    HostName 10.0.0.1\n    ForwardAgent no\n    # do not touch\n    \
+                    LocalForward 5432 localhost:5432\n    IdentityFile ~/.ssh/k1\n    \
+                    IdentityFile ~/.ssh/k2\n    RequestTTY force\n    RemoteCommand tmux a\n\n\
+                    Host *\n    ForwardAgent yes\n";
+        let (dir, cfg) = cfg_in_temp_dir(body);
+        let nh = NewHost {
+            hostname: "10.0.0.1".into(),
+            identity: "~/.ssh/k1".into(),
+            remote_command: "tmux a".into(),
+            ..edit_of("prod")
+        };
+        update_host_in(&cfg, "prod", &nh).unwrap();
+        let after = fs::read_to_string(&cfg).unwrap();
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            after, body,
+            "an unchanged form must keep ForwardAgent no, comments, unknown keys, the second IdentityFile and RequestTTY force"
+        );
+    }
+
+    #[test]
+    fn a_forward_agent_an_earlier_block_overrides_is_refused_and_nothing_is_written() {
+        let body = "Host *\n    ForwardAgent yes\n\nHost z\n    HostName 10.0.0.9\n";
+        let (dir, cfg) = cfg_in_temp_dir(body);
+        let nh = NewHost {
+            hostname: "10.0.0.9".into(),
+            ..edit_of("z")
+        };
+        let res = update_host_in(&cfg, "z", &nh);
+        let after = fs::read_to_string(&cfg).unwrap();
+        let files = fs::read_dir(&dir).unwrap().count();
+        fs::remove_dir_all(&dir).ok();
+        assert!(
+            res.is_err(),
+            "ssh would still forward the agent, so the save must fail"
+        );
+        assert_eq!(after, body, "a refused edit must not touch the config");
+        assert_eq!(files, 1, "a refused edit must not leave a backup either");
+    }
+
+    #[test]
+    fn switching_forward_agent_off_writes_it_where_ssh_will_read_it() {
+        let (dir, cfg) =
+            cfg_in_temp_dir("Host a\n    HostName 1\n\nHost a b\n    ForwardAgent yes\n");
+        let nh = NewHost {
+            hostname: "1".into(),
+            ..edit_of("a")
+        };
+        update_host_in(&cfg, "a", &nh).unwrap();
+        let after = fs::read_to_string(&cfg).unwrap();
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            effective_forward_agent(&after, "a"),
+            "no",
+            "the host's own block comes first, so its `no` must be written there:\n{after}"
+        );
+    }
+
+    #[test]
+    fn a_match_line_ends_the_host_block_above_it() {
+        let hosts = parse_str(
+            "Host a\n  HostName 10.0.0.1\nMatch user nobody\n  ForwardAgent yes\n  RemoteCommand tmux a\n",
+        );
+        let a = hosts.iter().find(|h| h.alias == "a").unwrap();
+        assert_eq!(
+            a.forward_agent, None,
+            "a Match setting applies only when its condition holds"
+        );
+        assert_eq!(a.remote_command, None);
+    }
+
+    #[test]
+    fn the_first_value_in_a_block_wins_as_it_does_in_ssh() {
+        let hosts = parse_str("Host a\n  IdentityFile ~/.ssh/k1\n  IdentityFile ~/.ssh/k2\n");
+        assert_eq!(hosts[0].identity.as_deref(), Some("~/.ssh/k1"));
     }
 }

@@ -66,6 +66,11 @@ pub(crate) enum ConfirmAction {
     ClearKnownHost {
         target: String,
     },
+    /// Write `IdentitiesOnly yes` into a host's block, so ssh offers only its
+    /// IdentityFile instead of every key in the agent.
+    IdentitiesOnly {
+        alias: String,
+    },
     /// Drop a forward's line from `~/.config/easyssh/tunnels`. Only ever asked
     /// about one that is already stopped, so there is no process to end: the
     /// line is the whole of what is lost.
@@ -160,6 +165,20 @@ impl App {
                 }
                 Err(e) => self.set_failed(format!("delete failed: {e}")),
             },
+            ConfirmAction::IdentitiesOnly { alias } => {
+                match sshcfg::add_option(&alias, "IdentitiesOnly", "yes") {
+                    Ok(false) => self.set_failed(format!(
+                        "{alias} already sets IdentitiesOnly, so something else is offering too many keys"
+                    )),
+                    Ok(true) => {
+                        self.refresh_hosts();
+                        self.set_status(format!(
+                            "{alias} now offers only its IdentityFile; press Enter to reconnect"
+                        ));
+                    }
+                    Err(e) => self.set_failed(format!("could not edit {alias}: {e}")),
+                }
+            }
             ConfirmAction::ClearKnownHost { target } => {
                 let out = Command::new("ssh-keygen").arg("-R").arg(&target).output();
                 let (ok, msg) = match out {
@@ -190,6 +209,19 @@ impl App {
                 "{host}'s key no longer matches ~/.ssh/known_hosts. Usually the server was reinstalled or its IP was reused; rarely it is a man-in-the-middle. Only if you trust this change, drop the saved key (ssh-keygen -R {target}) and reconnect. Remove it now?"
             ),
             ConfirmAction::ClearKnownHost { target },
+        ));
+    }
+
+    /// Offer to stop the agent drowning a host's IdentityFile in other keys.
+    pub(super) fn offer_identities_only(&mut self, alias: &str) {
+        self.confirm = Some(Confirm::offer(
+            "too many keys offered",
+            format!(
+                "{alias} gave up before its IdentityFile was tried, because your agent offered every key it holds first. Make ssh offer only that key (IdentitiesOnly yes in its block)?"
+            ),
+            ConfirmAction::IdentitiesOnly {
+                alias: alias.to_string(),
+            },
         ));
     }
 }

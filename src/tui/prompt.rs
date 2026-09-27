@@ -102,6 +102,9 @@ impl Field {
     pub(super) fn display(&self) -> String {
         match &self.kind {
             Kind::Text => self.value.clone(),
+            Kind::Choice(options) if options.len() == 2 => {
+                format!(" {}    {} ", options[0], options[1])
+            }
             Kind::Choice(options) => format!("‹ {} ›", options[self.choice]),
         }
     }
@@ -109,6 +112,31 @@ impl Field {
     pub(super) fn is_choice(&self) -> bool {
         matches!(self.kind, Kind::Choice(_))
     }
+
+    /// The picked option of a choice field, or the typed value of a text one.
+    pub(super) fn answer(&self) -> &str {
+        match &self.kind {
+            Kind::Text => self.value.trim(),
+            Kind::Choice(options) => &options[self.choice],
+        }
+    }
+}
+
+/// `ForwardAgent` as a no/yes toggle. A socket path already in the config
+/// becomes a third option, so editing the host does not quietly drop it.
+fn forward_agent_field(current: Option<&str>) -> Field {
+    let current = current.unwrap_or("no").trim();
+    let mut options = vec!["no", "yes"];
+    let choice = match options.iter().position(|o| o.eq_ignore_ascii_case(current)) {
+        Some(i) => i,
+        None => {
+            options.push(current);
+            2
+        }
+    };
+    let mut f = Field::choice("ForwardAgent", &options);
+    f.choice = choice;
+    f
 }
 
 /// What a wizard does once submitted. Cloned out before we move the prompt, so
@@ -179,6 +207,7 @@ impl Prompt {
                 Field::new("IdentityFile", "").hint("a key in ~/.ssh"),
                 Field::new("ProxyJump", "").hint("a host to hop through"),
                 Field::new("RemoteCommand", "").hint("runs instead of a shell, e.g. pwsh"),
+                forward_agent_field(None),
             ],
         }
     }
@@ -205,6 +234,7 @@ impl Prompt {
                     .hint("a host to hop through"),
                 Field::filled("RemoteCommand", h.remote_command.as_deref().unwrap_or(""))
                     .hint("runs instead of a shell, e.g. pwsh"),
+                forward_agent_field(Some(&sshcfg::forward_agent_for(&h.alias))),
             ],
         }
     }
@@ -443,10 +473,7 @@ fn tunnel_fields() -> Vec<Field> {
     vec![
         Field::choice(
             "Direction",
-            &[
-                "reach a remote port from here (-L)",
-                "expose a local port over there (-R)",
-            ],
+            &["reach a remote port (-L)", "expose a local port (-R)"],
         ),
         Field::new("Host", "")
             .required()
@@ -652,7 +679,26 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             Span::styled(format!(":{pad}"), label_style),
         ];
         let value = field.display();
-        let tail = if field.is_choice() {
+        let tail = if let Kind::Choice(options) = &field.kind
+            && options.len() == 2
+        {
+            // A toggle is the house buttons, the picked one filled.
+            for (i, option) in options.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::raw("  "));
+                }
+                let style = if i == field.choice {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    dim
+                };
+                spans.push(Span::styled(format!(" {option} "), style));
+            }
+            String::new()
+        } else if field.is_choice() {
             // A cycled answer, in the colour a form uses for the thing it will
             // submit; the guillemets are what say it can be stepped.
             let mut style = Style::default().fg(Color::Cyan);

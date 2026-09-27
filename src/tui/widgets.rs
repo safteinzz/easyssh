@@ -6,8 +6,14 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 
 /// Rough count of how many rows `text` needs when word-wrapped to `width`,
-/// matching how ratatui's `Wrap` breaks on spaces. Used to size modal boxes.
+/// matching how ratatui's `Wrap` breaks on spaces. Each `\n` starts a new row.
+/// Used to size modal boxes.
 pub(super) fn wrapped_line_count(text: &str, width: usize) -> usize {
+    text.split('\n').map(|l| wrapped_rows(l, width)).sum()
+}
+
+/// `wrapped_line_count` for one line with no breaks in it.
+fn wrapped_rows(text: &str, width: usize) -> usize {
     if width == 0 {
         return 1;
     }
@@ -159,4 +165,18 @@ pub(super) fn box_buttons(colour: Color, yes: bool) -> Line<'static> {
         Span::raw("  "),
         button("No (n)", !yes),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_body_with_line_breaks_is_measured_one_row_per_line() {
+        assert_eq!(
+            wrapped_line_count("sentence\n\nssh raspi\n\nwhat ssh said", 80),
+            5,
+            "an alert sized as one line clips its last rows and its key line"
+        );
+    }
 }
