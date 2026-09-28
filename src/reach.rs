@@ -8,7 +8,9 @@
 //! channel; results carry the generation they were started in, so answers from
 //! a superseded round are discarded rather than repainting a stale list.
 
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::Read;
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -81,20 +83,75 @@ pub fn probe_all(targets: Vec<Target>, generation: u64, tx: Sender<Msg>, timeout
     });
 }
 
-/// One TCP connect with a deadline. DNS resolution has no timeout of its own,
-/// so a host with broken DNS can hold its thread until the resolver gives up;
-/// the answer is discarded by generation if the round has moved on.
+/// One TCP connect with a deadline, after resolving the name within the same
+/// deadline.
 fn probe(host: &str, port: u16, timeout: Duration) -> Reach {
     let started = Instant::now();
-    let Ok(mut addrs) = (host, port).to_socket_addrs() else {
-        return Reach::Down;
-    };
     // Try each address (a name can resolve to both A and AAAA records); the
     // first one that answers is the one ssh would have used.
-    for addr in addrs.by_ref() {
-        if TcpStream::connect_timeout(&addr, timeout).is_ok() {
+    for ip in resolve(host, timeout) {
+        if TcpStream::connect_timeout(&SocketAddr::new(ip, port), timeout).is_ok() {
             return Reach::Up(started.elapsed().as_millis() as u64);
         }
     }
     Reach::Down
+}
+
+/// The addresses `host` resolves to, in the resolver's order, or none when the
+/// lookup fails or outlasts `timeout`.
+///
+/// The lookup runs in a `getent ahosts` child rather than through
+/// `getaddrinfo` here: glibc's `exit` takes every stdio lock, and an NSS module
+/// such as `mdns4_minimal` holds one while it waits on avahi, so a lookup still
+/// in flight made quitting take as long as the lookup. `getent` asks the same
+/// NSS chain ssh does, so the answers still match. Where `getent` cannot be
+/// started, the name is resolved in-process.
+fn resolve(host: &str, timeout: Duration) -> Vec<IpAddr> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return vec![ip];
+    }
+    let Ok(mut child) = Command::new("getent")
+        .args(["ahosts", host])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return (host, 0)
+            .to_socket_addrs()
+            .map(|addrs| addrs.map(|a| a.ip()).collect())
+            .unwrap_or_default();
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Vec::new();
+            }
+        }
+    }
+    let mut out = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_string(&mut out);
+    }
+    parse_ahosts(&out)
+}
+
+/// The addresses in `getent ahosts` output, once each: it prints every address
+/// three times, one line per socket type.
+fn parse_ahosts(out: &str) -> Vec<IpAddr> {
+    let mut ips = Vec::new();
+    for ip in out
+        .lines()
+        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+    {
+        if !ips.contains(&ip) {
+            ips.push(ip);
+        }
+    }
+    ips
 }
