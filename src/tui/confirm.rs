@@ -61,6 +61,14 @@ pub(crate) enum ConfirmAction {
     /// Force `fusermount -u -z` on a mountpoint a normal unmount found busy.
     LazyUnmount {
         local: String,
+        /// Delete its line once it is unmounted, because a `D` is what hit the busy mount.
+        forget: bool,
+    },
+    /// Drop a mount's line from `~/.config/easyssh/mounts`, unmounting it first.
+    DeleteMount {
+        local: String,
+        /// Mounted right now, so it is unmounted before the line goes.
+        on: bool,
     },
     /// Run `ssh-keygen -R <target>` to drop a host key that no longer matches.
     ClearKnownHost {
@@ -71,14 +79,14 @@ pub(crate) enum ConfirmAction {
     IdentitiesOnly {
         alias: String,
     },
-    /// Drop a forward's line from `~/.config/easyssh/tunnels`. Only ever asked
-    /// about one that is already stopped, so there is no process to end: the
-    /// line is the whole of what is lost.
+    /// Drop a forward's line from `~/.config/easyssh/tunnels`, stopping it first.
     DeleteTunnel {
         kind: char,
         spec: String,
         host: String,
         label: String,
+        /// The process carrying it, stopped before the line goes.
+        pid: Option<u32>,
     },
 }
 
@@ -142,29 +150,54 @@ impl App {
                 }
                 Err(e) => self.set_failed(format!("delete failed: {e}")),
             },
-            ConfirmAction::LazyUnmount { local } => match mounts::unmount_lazy(&local) {
+            ConfirmAction::LazyUnmount { local, forget } => match mounts::unmount_lazy(&local) {
                 Ok(_) => {
                     let _ = fs::remove_dir(&local);
+                    let shown = crate::sshcfg::collapse_tilde(&local);
+                    match forget.then(|| mounts::forget(&local)) {
+                        Some(Err(e)) => self.set_failed(format!("delete failed: {e:#}")),
+                        Some(Ok(_)) => self.set_status(format!(
+                            "fusermount -u -z {shown}: lazy-unmounted and deleted"
+                        )),
+                        None => {
+                            self.set_status(format!("fusermount -u -z {shown}: lazy-unmounted"))
+                        }
+                    }
+                    self.refresh_mounts();
+                }
+                Err(e) => self.set_failed(format!("lazy unmount failed: {e}")),
+            },
+            // A busy mount leaves its line, and the lazy-unmount offer in its place.
+            ConfirmAction::DeleteMount { local, on }
+                if on && !self.unmount(local.clone(), true) => {}
+            ConfirmAction::DeleteMount { local, .. } => match mounts::forget(&local) {
+                Ok(_) => {
                     self.refresh_mounts();
                     self.set_status(format!(
-                        "fusermount -u -z {}: lazy-unmounted",
+                        "deleted {} from the mounts you keep",
                         crate::sshcfg::collapse_tilde(&local)
                     ));
                 }
-                Err(e) => self.set_failed(format!("lazy unmount failed: {e}")),
+                Err(e) => self.set_failed(format!("delete failed: {e}")),
             },
             ConfirmAction::DeleteTunnel {
                 kind,
                 spec,
                 host,
                 label,
-            } => match tunnels::forget(kind, &spec, &host) {
-                Ok(_) => {
-                    self.refresh_tunnels();
-                    self.set_status(format!("deleted tunnel '{label}'"));
+                pid,
+            } => {
+                if let Some(pid) = pid {
+                    let _ = tunnels::kill(pid);
                 }
-                Err(e) => self.set_failed(format!("delete failed: {e}")),
-            },
+                match tunnels::forget(kind, &spec, &host) {
+                    Ok(_) => {
+                        self.refresh_tunnels();
+                        self.set_status(format!("deleted tunnel '{label}'"));
+                    }
+                    Err(e) => self.set_failed(format!("delete failed: {e}")),
+                }
+            }
             ConfirmAction::IdentitiesOnly { alias } => {
                 match sshcfg::add_option(&alias, "IdentitiesOnly", "yes") {
                     Ok(false) => self.set_failed(format!(

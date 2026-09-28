@@ -1,6 +1,6 @@
 # Mount a remote folder: the form with the sshfs line it will run, the mount
 # on the Mounts tab, raspi's home listed from the shell like any local folder,
-# and `d` taking it down again and cleaning up.
+# then Enter taking it down and bringing it back, the line kept either way.
 #
 #   cd demo && vhs mount.tape && ./stage.sh down
 #
@@ -70,10 +70,15 @@ Sleep 300ms
 Type "l"
 Sleep 1.5s
 
-# ---- and gone again ------------------------------------------------------
-Type "d"
+# ---- Enter is the off switch, and the on switch --------------------------
+Enter
+Sleep 2.5s
+Enter
 Sleep 3s
 
+# Off again before quitting, so the stage is torn down with nothing mounted.
 Hide
+Enter
+Sleep 1.5s
 Type "q"
 Sleep 1s

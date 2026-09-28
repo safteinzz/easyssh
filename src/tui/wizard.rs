@@ -307,11 +307,6 @@ impl App {
                 host,
                 forced_command,
             } => {
-                // Fail early with an install hint rather than a cryptic spawn error.
-                if !mounts::sshfs_installed() {
-                    self.set_failed("sshfs is not installed (apt install sshfs · pacman -S sshfs · dnf install fuse-sshfs)");
-                    return None;
-                }
                 // Blank remote path → sshfs mounts the login home directory.
                 let spec = MountSpec::from_fields(&host, forced_command, &prompt.fields);
                 if let Some(problem) = spec.problem() {
@@ -319,26 +314,7 @@ impl App {
                     self.prompt = Some(prompt);
                     return None;
                 }
-                let local = spec.local.clone();
-                if let Err(e) = fs::create_dir_all(&local) {
-                    self.set_failed(format!(
-                        "mount: cannot create {}: {} - pick another folder, or change Mount folder in Settings",
-                        crate::sshcfg::collapse_tilde(&local),
-                        e.kind()
-                    ));
-                    return None;
-                }
-                // Jump to the Mounts tab so the result (success or empty) is
-                // visible, and remember which one to land on once it exists.
-                self.goto_view(View::Mounts);
-                self.new_mount = Some(local.clone());
-                Some(PendingRun {
-                    argv: spec.argv(),
-                    // Home-relative, like the panel and `Mount::describe`: an absolute
-                    // path here would also put whoever rendered a screenshot into it.
-                    label: format!("sshfs {host}: → {}", sshcfg::collapse_tilde(&local)),
-                    connect: None,
-                })
+                self.start_mount(spec, true)
             }
 
             Action::EditSetting { key, label } => {

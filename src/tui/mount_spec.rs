@@ -13,6 +13,17 @@ pub(super) fn mount_point(default: &str, typed: &str) -> String {
     sshcfg::expand_tilde(raw).to_string_lossy().into_owned()
 }
 
+/// The remote path as sftp needs it: a leading `~` or `~/` is dropped, because
+/// sftp resolves a relative path against the login home but has no `~` of its
+/// own and would look for a directory literally named `~`.
+pub(super) fn remote_path(typed: &str) -> &str {
+    match typed.strip_prefix('~') {
+        Some("") => "",
+        Some(rest) if rest.starts_with('/') => rest.trim_start_matches('/'),
+        _ => typed,
+    }
+}
+
 /// Who the remote side runs the sftp server as. Mirrors the "Remote rights"
 /// choice field, in the same order.
 ///
@@ -62,11 +73,39 @@ impl MountSpec {
         };
         Self {
             host: host.to_string(),
-            remote: v(0).to_string(),
+            remote: remote_path(v(0)).to_string(),
             local: mount_point(&fields[1].default, v(1)),
             sudo: Sudo::from_choice(fields[2].choice),
             server,
             forced_command,
+        }
+    }
+
+    /// The mount a kept line describes, for turning it back on. Whether the host
+    /// forces a command is asked again, since the config may have changed.
+    pub(super) fn from_saved(m: &mounts::Mount) -> Self {
+        let (host, path) = m.remote.split_once(':').unwrap_or((&m.remote, ""));
+        let alias = host.rsplit('@').next().unwrap_or(host);
+        Self {
+            host: host.to_string(),
+            remote: remote_path(path).to_string(),
+            local: m.local.clone(),
+            sudo: if m.sudo.is_some() {
+                Sudo::NoPasswd
+            } else {
+                Sudo::No
+            },
+            server: m.sudo.clone().unwrap_or_default(),
+            forced_command: sshcfg::forces_command(alias),
+        }
+    }
+
+    /// The line this mount is kept as.
+    pub(super) fn saved(&self) -> mounts::Saved {
+        mounts::Saved {
+            remote: format!("{}:{}", self.host, self.remote),
+            local: self.local.clone(),
+            sudo: (self.sudo == Sudo::NoPasswd).then(|| self.server.clone()),
         }
     }
 
@@ -122,4 +161,24 @@ pub(super) fn shell_join(argv: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_home_relative_remote_path_reaches_sshfs_without_its_tilde() {
+        // sftp has no `~`, so `raspi:~/dotfiles` looks for a folder named `~`.
+        assert_eq!(remote_path("~/dotfiles/canon"), "dotfiles/canon");
+        assert_eq!(remote_path("~"), "", "blank is the login home");
+        assert_eq!(remote_path("~/"), "");
+        assert_eq!(remote_path("/etc/nginx"), "/etc/nginx");
+        assert_eq!(remote_path("dotfiles"), "dotfiles");
+        assert_eq!(
+            remote_path("~pi/x"),
+            "~pi/x",
+            "another user's home is not ours to rewrite"
+        );
+    }
 }

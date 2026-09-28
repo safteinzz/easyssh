@@ -93,19 +93,14 @@ fn host_lines(app: &App) -> Vec<Line<'static>> {
     let tunnels: Vec<String> = app
         .tunnels
         .iter()
-        .filter(|t| t.host == h.alias)
+        .filter(|t| t.on() && t.host == h.alias)
         .map(|t| format!("-{} {}", t.kind, t.spec))
         .collect();
     let mounts: Vec<String> = app
         .mounts
         .iter()
-        .filter(|m| {
-            // `/proc/mounts` shows the sshfs source as `[user@]host:path`; the
-            // host part is what we mounted, which is this alias.
-            let src = m.remote.split(':').next().unwrap_or("");
-            src.rsplit('@').next().unwrap_or(src) == h.alias
-        })
-        .map(|m| m.local.clone())
+        .filter(|m| m.on && m.host() == h.alias)
+        .map(|m| shorten(&m.local))
         .collect();
     if !tunnels.is_empty() || !mounts.is_empty() {
         lines.push(Line::raw(""));
@@ -240,8 +235,16 @@ fn mount_lines(app: &App) -> Vec<Line<'static>> {
     if let Some(user) = m.user() {
         lines.push(row("As", user.to_string()));
     }
-    lines.push(row("Remote", m.remote_path().to_string()));
+    lines.push(row("Remote", m.remote_path()));
     lines.push(row("Local", shorten(&m.local)));
+    if let Some(server) = &m.sudo {
+        lines.push(row("As root", format!("sudo {server}")));
+    }
+    if !m.on {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("not mounted · ↵ mounts it", dim()));
+        return lines;
+    }
     lines.push(row(
         "Access",
         match m.has_option("ro") {

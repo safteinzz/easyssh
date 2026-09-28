@@ -347,9 +347,7 @@ impl App {
 
     /// The Tunnels tab. Every row is a forward you keep, so the keys are the
     /// same for all of them: Enter is the off switch a background `ssh -N` never
-    /// had, and `d` stops one that is up, or deletes the line of one that is
-    /// already stopped. Two presses to be rid of it, and no gate in front of the
-    /// one you do all day.
+    /// had, and `D` deletes the line behind a gate.
     pub(super) fn tunnels_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         match key.code {
             KeyCode::Enter => {
@@ -373,33 +371,29 @@ impl App {
                 self.prompt = Some(prompt);
                 None
             }
-            KeyCode::Char('d') | KeyCode::Char('x') => {
+            // Deleting loses the line, so it is its own key and always asks first;
+            // a running forward is stopped on the way out.
+            KeyCode::Char('D') => {
                 let (label, kind, spec, host, pid) = {
                     let t = self.selected_tunnel()?;
                     (t.label(), t.kind, t.spec.clone(), t.host.clone(), t.pid())
                 };
-                match pid {
-                    // Stopping is trivially undone by the very next keypress, so
-                    // it happens at once.
-                    Some(pid) => {
-                        let _ = tunnels::kill(pid);
-                        self.refresh_tunnels();
-                        self.set_status(format!("stopped '{label}'"));
-                    }
-                    // Losing the line is not, so that one asks first.
-                    None => {
-                        self.confirm = Some(Confirm::new(
-                            "delete tunnel",
-                            format!("Delete '{label}' from the forwards you keep?"),
-                            ConfirmAction::DeleteTunnel {
-                                kind,
-                                spec,
-                                host,
-                                label,
-                            },
-                        ));
-                    }
-                }
+                let running = if pid.is_some() {
+                    " It is running, so it is stopped first."
+                } else {
+                    ""
+                };
+                self.confirm = Some(Confirm::new(
+                    "delete tunnel",
+                    format!("Delete '{label}' from the forwards you keep?{running}"),
+                    ConfirmAction::DeleteTunnel {
+                        kind,
+                        spec,
+                        host,
+                        label,
+                        pid,
+                    },
+                ));
                 None
             }
             KeyCode::Char('r') => {
@@ -440,31 +434,38 @@ impl App {
         }
     }
 
+    /// The Mounts tab, keyed the way Tunnels is: Enter mounts or unmounts, and
+    /// `D` deletes the line.
     pub(super) fn mounts_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         match key.code {
-            KeyCode::Char('d') | KeyCode::Char('x') => {
-                let local = self.selected_mount()?.local.clone();
-                match mounts::unmount(&local) {
-                    Ok(_) => {
-                        // Remove the now-empty mountpoint so it does not linger.
-                        // `remove_dir` only deletes an empty dir, so a mount over
-                        // a dir that had real content is left untouched.
-                        let _ = fs::remove_dir(&local);
-                        self.refresh_mounts();
-                        let shown = crate::sshcfg::collapse_tilde(&local);
-                        self.set_status(format!("fusermount -u {shown}: unmounted"));
-                    }
-                    Err(e) => {
-                        self.confirm = Some(Confirm::new(
-                            "unmount failed",
-                            format!(
-                                "{}: {e}. Something is still using it (a shell cd'd in, or an open file). Force a lazy unmount (fusermount -u -z)? It detaches now and the kernel frees it once nothing uses it.",
-                                crate::sshcfg::collapse_tilde(&local)
-                            ),
-                            ConfirmAction::LazyUnmount { local },
-                        ));
-                    }
+            KeyCode::Enter => {
+                let m = self.selected_mount()?;
+                if m.on {
+                    self.unmount_selected();
+                    return None;
                 }
+                let spec = MountSpec::from_saved(m);
+                if let Some(problem) = spec.problem() {
+                    self.set_failed(problem);
+                    return None;
+                }
+                self.start_mount(spec, false)
+            }
+            KeyCode::Char('D') => {
+                let m = self.selected_mount()?;
+                let mounted = if m.on {
+                    " It is mounted, so it is unmounted first."
+                } else {
+                    ""
+                };
+                self.confirm = Some(Confirm::new(
+                    "delete mount",
+                    format!("Delete {} from the mounts you keep?{mounted}", m.describe()),
+                    ConfirmAction::DeleteMount {
+                        local: m.local.clone(),
+                        on: m.on,
+                    },
+                ));
                 None
             }
             KeyCode::Char('r') => {
@@ -474,5 +475,94 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// Unmount the selected row, offering a lazy unmount when it is busy.
+    fn unmount_selected(&mut self) {
+        let Some(m) = self.selected_mount() else {
+            return;
+        };
+        let local = m.local.clone();
+        self.unmount(local, false);
+    }
+
+    /// Unmount `local`, offering a lazy unmount when it is busy. True once it is
+    /// no longer mounted; `forget` rides along into that offer.
+    pub(super) fn unmount(&mut self, local: String, forget: bool) -> bool {
+        match mounts::unmount(&local) {
+            Ok(_) => {
+                // Remove the now-empty mountpoint so it does not linger.
+                // `remove_dir` only deletes an empty dir, so a mount over
+                // a dir that had real content is left untouched.
+                let _ = fs::remove_dir(&local);
+                self.refresh_mounts();
+                let shown = crate::sshcfg::collapse_tilde(&local);
+                self.set_status(format!("fusermount -u {shown}: unmounted"));
+                true
+            }
+            Err(e) => {
+                self.confirm = Some(Confirm::new(
+                    "unmount failed",
+                    format!(
+                        "{}: {e}. Something is still using it (a shell cd'd in, or an open file). Force a lazy unmount (fusermount -u -z)? It detaches now and the kernel frees it once nothing uses it.",
+                        crate::sshcfg::collapse_tilde(&local)
+                    ),
+                    ConfirmAction::LazyUnmount { local, forget },
+                ));
+                false
+            }
+        }
+    }
+
+    /// Hand a mount to the event loop to run suspended, since sshfs may ask for a
+    /// password. The mountpoint is made first and resolved to the path the kernel
+    /// will list it under, and with `keep` the line is written then, before the
+    /// mount is tried, so one that fails is left in the list to try again.
+    pub(super) fn start_mount(&mut self, mut spec: MountSpec, keep: bool) -> Option<PendingRun> {
+        // Fail early with an install hint rather than a cryptic spawn error.
+        if !mounts::sshfs_installed() {
+            self.set_failed("sshfs is not installed (apt install sshfs · pacman -S sshfs · dnf install fuse-sshfs)");
+            return None;
+        }
+        if let Err(e) = fs::create_dir_all(&spec.local) {
+            self.set_failed(format!(
+                "mount: cannot create {}: {}, so pick another folder or change Mount folder in Settings",
+                crate::sshcfg::collapse_tilde(&spec.local),
+                e.kind()
+            ));
+            return None;
+        }
+        // `/proc/mounts` lists it absolute, symlinks resolved and without a
+        // trailing slash, and the kept line is matched against that.
+        if let Ok(real) = fs::canonicalize(&spec.local) {
+            spec.local = real.to_string_lossy().into_owned();
+        }
+        let local = spec.local.clone();
+        if keep && let Err(e) = mounts::remember(&spec.saved()) {
+            let why = e
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .map_or_else(|| e.root_cause().to_string(), |io| io.kind().to_string());
+            self.alert(
+                "mount not kept",
+                format!(
+                    "could not write `{}`: {why}\n\nThe mount goes ahead, but it will not be listed once it is unmounted, so fix that file's permissions.",
+                    crate::sshcfg::collapse_tilde(&mounts::saved_path().to_string_lossy())
+                ),
+            );
+        }
+        self.goto_view(View::Mounts);
+        self.new_mount = Some(local.clone());
+        Some(PendingRun {
+            argv: spec.argv(),
+            // Home-relative, like the panel and `Mount::describe`: an absolute
+            // path here would also put whoever rendered a screenshot into it.
+            label: format!(
+                "sshfs {}: → {}",
+                spec.host,
+                crate::sshcfg::collapse_tilde(&local)
+            ),
+            connect: None,
+        })
     }
 }

@@ -730,6 +730,8 @@ fn a_new_mount_is_the_selected_one_once_it_exists() {
             remote: "x:".into(),
             local: (*local).into(),
             options: "rw".into(),
+            on: true,
+            sudo: None,
         })
         .collect();
     app.mount_state.select(Some(0));

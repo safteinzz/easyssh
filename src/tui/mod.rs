@@ -84,9 +84,8 @@ const VIEWS: [View; 5] = [
 const HOSTS_HINTS: &str =
     "↵ connect · c new · e edit · d del · m mount · t/T tunnel · r refresh · / find · ? help";
 const KEYS_HINTS: &str = "c new · y copy pubkey · Y install on host · r refresh · / find · ? help";
-const TUNNELS_HINTS: &str =
-    "↵ on/off · c new · e edit · d stop, del when off · r refresh · / find · ? help";
-const MOUNTS_HINTS: &str = "d unmount · r refresh · / find · ? help";
+const TUNNELS_HINTS: &str = "↵ on/off · c new · e edit · D delete · r refresh · / find · ? help";
+const MOUNTS_HINTS: &str = "↵ on/off · D delete · r refresh · / find · ? help";
 const SETTINGS_HINTS: &str = "↵ change · d back to default · r reload · ? help";
 
 /// How long a status message stays on screen before the hints return.
@@ -298,7 +297,7 @@ impl App {
     }
 
     pub(super) fn refresh_mounts(&mut self) {
-        self.mounts = mounts::list();
+        self.mounts = mounts::entries();
         let n = self.mount_rows().len();
         Self::clamp(&mut self.mount_state, n);
     }

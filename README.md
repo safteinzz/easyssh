@@ -42,19 +42,21 @@ a key you already have. `Y` on the Keys tab installs it on the new machine with
 A port forward is a background `ssh -N` with no window and nothing to close.
 `t` on a host opens one (`T` the other way, `-R`), and the form shows the line
 it will run as you type. Each row says what it does without your naming it,
-`↵` turns one off and on, `e` rewrites it, `d` stops it and deletes it once
-stopped.
+`↵` turns one off and on, `e` rewrites it, `D` deletes it.
 
 The list is `~/.config/easyssh/tunnels`, one `-L spec host` line each, so it can
 live in your dotfiles.
 
 ## Mount a remote folder
 
-![The mount form on raspi showing the sshfs command it will run, the mount appearing on the Mounts tab, raspi's home listed from the shell like any folder, then unmounting it](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/mount.gif)
+![The mount form on raspi showing the sshfs command it will run, the mount appearing on the Mounts tab, raspi's home listed from the shell like any folder, then unmounted and mounted again with Enter](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/mount.gif)
 
 `m` on a host shows the `sshfs` line it will run, and the mount lands on the
 Mounts tab as an ordinary folder, `~/sshfs/raspi` here. `sshfs` makes a remote directory a local one, and then you forget
-the `fusermount -u` on the way out: `d` does it, and cleans the mountpoint up.
+the `fusermount -u` on the way out: `↵` does it and mounts it again later, and
+`D` deletes it. The mountpoint is cleaned up either way.
+
+The list is `~/.config/easyssh/mounts`, one `local <- host:path` line each.
 
 ## Manage keys
 

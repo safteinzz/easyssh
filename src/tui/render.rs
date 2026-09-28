@@ -255,7 +255,18 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
             }
             let items: Vec<ListItem> = rows
                 .iter()
-                .map(|&i| ListItem::new(Span::raw(app.mounts[i].describe())))
+                .map(|&i| {
+                    let m = &app.mounts[i];
+                    let (state, state_style) = match m.on {
+                        true => ("on ", Style::default().fg(Color::Green)),
+                        false => ("off", dim),
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(state, state_style),
+                        Span::raw("  "),
+                        Span::raw(m.describe()),
+                    ]))
+                })
                 .collect();
             let list = List::new(items)
                 .block(counted("Mounts", rows.len(), app.mounts.len()))
@@ -450,8 +461,8 @@ pub(super) fn render_help(f: &mut Frame, area: Rect) {
         Line::raw("Keys      c new key (ssh-keygen -t ed25519)"),
         Line::raw("          y copy the public key · Y install it on a host (ssh-copy-id)"),
         Line::raw("          agent = loaded in ssh-agent · passphrase = asks to unlock"),
-        Line::raw("Tunnels   ↵ start/stop (ssh -N) · c new · e edit · d stop, or delete"),
-        Line::raw("Mounts    d unmount (fusermount -u <dir>)           r refresh"),
+        Line::raw("Tunnels   ↵ start/stop (ssh -N) · c new · e edit · D delete"),
+        Line::raw("Mounts    ↵ mount/unmount (sshfs, fusermount -u) · D delete"),
         Line::raw("Settings  ↵ change it · d back to default · r reload the file"),
         Line::raw(""),
         Line::raw("In a form  type to fill (h/j/k/l are text!)"),

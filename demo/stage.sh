@@ -252,8 +252,23 @@ seed_tunnels() {
 ROWS
 }
 
+# essh lists every sshfs mount on the machine, not just the staged ones, so a
+# real one would be in frame and a tape's Enter would unmount it. That happened
+# once, to a real mount.
+assert_no_real_mounts() {
+  local real
+  real="$(awk -v s="$STAGE/" '$3 == "fuse.sshfs" && index($2, s) != 1 {print $2}' /proc/mounts)"
+  if [ -n "$real" ]; then
+    echo "stage.sh: an sshfs mount outside the stage is up, and essh would show and touch it:" >&2
+    echo "$real" | sed 's/^/  /' >&2
+    echo "unmount it (\`fusermount -u <dir>\`) and rerun" >&2
+    exit 1
+  fi
+}
+
 up() {
   down_quiet
+  assert_no_real_mounts
   mkdir -p "$STAGE"
   # Stamp it before anything else, so a later `down` can prove this tree is ours.
   : > "$STAGE/$MARKER"
@@ -368,11 +383,10 @@ open_shell() {
 case "${1:-up}" in
   up)    up ;;
   fresh) FRESH=1 up ;;
-  # Run from inside the staged home: a mountpoint defaults to `./sshfs/<host>`
-  # relative to the working directory, and running from here would put this
-  # script's own path on screen.
-  run)   (cd "$STAGE" && env -i $(env_for_stage) "$ESSH") ;;
-  shell) open_shell ;;
+  # Run from inside the staged home, so a relative path typed into a form
+  # resolves in the fixture rather than beside this script.
+  run)   assert_no_real_mounts; (cd "$STAGE" && env -i $(env_for_stage) "$ESSH") ;;
+  shell) assert_no_real_mounts; open_shell ;;
   ls)    env -i $(env_for_stage) "$ESSH" ls -v ;;
   down)  down_quiet; echo "torn down" ;;
   *)     echo "usage: $0 [up|fresh|run|shell|ls|down]" >&2; exit 2 ;;
