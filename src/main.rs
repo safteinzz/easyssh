@@ -13,6 +13,7 @@
 
 mod clip;
 mod commands;
+mod completion;
 mod history;
 mod keys;
 mod mounts;
@@ -22,7 +23,7 @@ mod sshcfg;
 mod tui;
 mod tunnels;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 /// clap's own layout with one change: `{before-help}` moves from above the
 /// description to just under `Usage:`, so the shapes block lands on top of the
@@ -77,7 +78,8 @@ const LONG_VERSION: &str = concat!(
     // the leftovers and putting it on top answers the wrong question first.
     help_template = TEMPLATE,
     before_help = WAYS,
-    after_help = AFTER
+    after_help = AFTER,
+    add = clap_complete::engine::SubcommandCandidates::new(completion::hosts)
 )]
 struct Cli {
     #[command(subcommand)]
@@ -103,6 +105,7 @@ enum Cmd {
 }
 
 fn main() {
+    completion::handle(Cli::command);
     let cli = Cli::parse();
 
     match cli.command {

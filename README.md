@@ -95,6 +95,18 @@ essh cp <src> <dst>  # scp with alias:path shorthand and auto -r for dirs
 
 Each tab's own keys are on its bottom line, and `?` lists them all.
 
+## Tab completion
+
+Add one line to your shell's startup file and Tab completes your config's aliases after `essh`, and local paths, `alias:` and the remote side's own folders after `essh cp`:
+
+```bash
+source <(COMPLETE=bash essh)   # ~/.bashrc
+source <(COMPLETE=zsh essh)    # ~/.zshrc
+COMPLETE=fish essh | source    # ~/.config/fish/config.fish
+```
+
+A remote path is listed over ssh without a prompt, so it completes on hosts you reach with a key or the agent and stays quiet on the rest.
+
 ## Notes
 
 - Yanking needs `wl-copy`, `xclip`, `xsel` or `pbcopy` on PATH; it names the one

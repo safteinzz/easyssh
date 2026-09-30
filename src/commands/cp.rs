@@ -11,7 +11,8 @@ use std::path::Path;
 pub struct Args {
     /// One or more sources followed by the destination. A remote side is
     /// `host:path` (host = a config alias), e.g. `essh cp notes.md raspi:~`.
-    #[arg(required = true, num_args = 2.., value_name = "PATH")]
+    #[arg(required = true, num_args = 2.., value_name = "PATH",
+          add = clap_complete::ArgValueCompleter::new(crate::completion::cp_path))]
     pub paths: Vec<String>,
 }
 
@@ -58,7 +59,7 @@ pub fn run(args: Args) {
 /// If `token` is a remote spec `host:path`, return the host part. We only treat
 /// the piece before the first `:` as a host when it looks like an alias - a
 /// Windows path (`C:\…`) or absolute path isn't a remote.
-fn remote_alias(token: &str) -> Option<String> {
+pub fn remote_alias(token: &str) -> Option<String> {
     let (head, _tail) = token.split_once(':')?;
     if head.is_empty() || head.contains('/') || head.contains('\\') || head.len() == 1 {
         return None; // paths, not host aliases
