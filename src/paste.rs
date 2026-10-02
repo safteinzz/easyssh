@@ -17,7 +17,7 @@
 //! one when a login ends. Every login therefore binds a new name, and the
 //! stand-in deletes the ones nothing listens on any more.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use std::fs;
 use std::path::PathBuf;
 
@@ -32,7 +32,7 @@ const MARKER: &str = "essh image-paste stand-in";
 /// and 108 on Linux, and ssh refuses the whole login over a path that does not
 /// fit (`Bad remote forwarding specification`), not just the forward.
 const MAX_SOCKET_PATH: usize = 100;
-/// The longest name a login gives its remote socket, `<epoch>-<pid>.sock`.
+/// The longest name a login gives its remote socket, `<epoch>-<pid>-<n>.sock`.
 const SOCKET_NAME_MAX: usize = 32;
 
 /// `~/.config/easyssh/paste`, beside `tunnels` and `mounts`.
@@ -120,10 +120,21 @@ pub fn forget(alias: &str) -> Result<()> {
 }
 
 fn write_saved(path: &std::path::Path, body: &str) -> Result<()> {
+    let shown = crate::sshcfg::collapse_tilde(&path.to_string_lossy());
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        fs::create_dir_all(dir).map_err(|e| {
+            anyhow!(
+                "could not create the folder of `{shown}` ({}), so check its permissions",
+                e.kind()
+            )
+        })?;
     }
-    fs::write(path, body).with_context(|| format!("writing {}", path.display()))
+    fs::write(path, body).map_err(|e| {
+        anyhow!(
+            "could not write `{shown}` ({}), so check its permissions",
+            e.kind()
+        )
+    })
 }
 
 /// `ssh <alias>` running `script` under `sh`, whatever the login shell is.
@@ -335,7 +346,13 @@ mod server {
         let epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let remote = format!("{}/{epoch}-{pid}.sock", enabled.dir.trim_end_matches('/'));
+        // The TUI keeps one pid across logins, and sshd never removes a socket.
+        static LOGINS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = LOGINS.fetch_add(1, Ordering::SeqCst);
+        let remote = format!(
+            "{}/{epoch}-{pid}-{n}.sock",
+            enabled.dir.trim_end_matches('/')
+        );
         let local = socket_dir()?.join(format!("paste-{pid}.sock"));
         let shown = local.to_string_lossy();
         if shown.contains(':') || shown.len() > MAX_SOCKET_PATH {

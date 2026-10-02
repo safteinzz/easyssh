@@ -70,9 +70,11 @@ my $b;
 print $b while sysread($s, $b, 65536);
 ' "$1" "$2"
     elif command -v socat >/dev/null 2>&1; then
-        printf '%s\n' "$2" | socat -t 15 - "UNIX-CONNECT:$1" 2>/dev/null || return 1
+        # socat and nc exit 1 for any failure, and a failed connect here is a
+        # socket left by a connection that has ended.
+        printf '%s\n' "$2" | socat -t 15 - "UNIX-CONNECT:$1" 2>/dev/null || return 2
     elif command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q -- '-U'; then
-        printf '%s\n' "$2" | nc -U "$1" 2>/dev/null || return 1
+        printf '%s\n' "$2" | nc -U "$1" 2>/dev/null || return 2
     else
         return 1
     fi

@@ -719,6 +719,10 @@ fn run_suspended(
     // with an invisible cursor and you cannot see where you are typing.
     terminal.show_cursor()?;
 
+    // A Ctrl-C at the child's password prompt is meant for the child, and
+    // would otherwise end the toolbox and leave a paste socket behind.
+    #[cfg(unix)]
+    let caught = crate::commands::connect::swallow_interrupts();
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..]);
     let output = if let Some(line) = capture {
@@ -736,6 +740,10 @@ fn run_suspended(
             stderr: Vec::new(),
         })
     };
+    #[cfg(unix)]
+    for id in caught {
+        signal_hook::low_level::unregister(id);
+    }
 
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;

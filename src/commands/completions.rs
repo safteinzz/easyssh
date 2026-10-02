@@ -38,10 +38,12 @@ impl Shell {
         }
     }
 
-    /// Lines that already load it, the README's earlier spelling included.
+    /// Lines that already load it, the README's earlier spelling included; a
+    /// commented one does not.
     fn loads_it(self, line: &str) -> bool {
         let line = line.trim();
-        line == self.rc_line() || line.contains(&format!("COMPLETE={} essh", self.name()))
+        !line.starts_with('#')
+            && (line == self.rc_line() || line.contains(&format!("COMPLETE={} essh", self.name())))
     }
 }
 
@@ -76,7 +78,10 @@ fn add(shell: Shell) {
     };
     let rc = home.join(shell.rc_file());
     let shown = format!("~/{}", shell.rc_file());
-    let existing = std::fs::read_to_string(&rc).unwrap_or_default();
+    // Lossy, so one byte that is not UTF-8 cannot make the file read as empty.
+    let existing = std::fs::read(&rc)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
     if existing.lines().any(|l| shell.loads_it(l)) {
         println!("{}", format!("already set up in {shown}").dimmed());
         return;
@@ -111,7 +116,7 @@ fn add(shell: Shell) {
             "open a new shell and Tab completes hosts and cp paths".dimmed()
         ),
         Err(e) => fail(&format!(
-            "could not write {shown}: {}; add `{}` to it by hand",
+            "could not write {shown} ({}), so add `{}` to it by hand",
             e.kind(),
             shell.rc_line()
         )),

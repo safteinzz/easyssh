@@ -48,7 +48,8 @@ const AFTER: &str = concat!(
     "\
 A connect hands the terminal to ssh, so stdout, stderr and the exit code are
 ssh's own and essh's words are on stderr; `essh ls` prints a table for people,
-not data. Run `essh <command> --help` for a command's details.",
+not data, and `essh completions <shell>` prints a shell script.
+Run `essh <command> --help` for a command's details.",
     "\n\n",
     env!("CARGO_PKG_REPOSITORY"),
     "\ncontributors: ",

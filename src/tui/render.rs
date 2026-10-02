@@ -453,7 +453,7 @@ pub(super) fn render_help(f: &mut Frame, area: Rect) {
         Line::raw("          m mount a remote folder locally (sshfs host: ./dir)"),
         Line::raw("          t reach a remote port from here (ssh -L)"),
         Line::raw("          T expose a local port on the host (ssh -R)"),
-        Line::raw("          P on/off: paste images into Claude Code there (xclip over ssh -R)"),
+        Line::raw("          P on/off: paste images into Claude Code there (ssh -R)"),
         Line::raw("          R fix \"host key changed\" (ssh-keygen -R <host>)"),
         Line::raw("          r reload · ● up · ● down · ○ checking the ssh port"),
         Line::raw("Keys      c new key (ssh-keygen -t ed25519)"),

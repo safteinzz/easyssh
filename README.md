@@ -99,8 +99,9 @@ the remote sftp-server path. `↵` changes one, `d` puts it back, and it saves t
 ## Commands
 
 ```bash
-essh ls [-v]         # list hosts from ~/.ssh/config (-v adds target, key, jump)
-essh cp <src> <dst>  # scp with alias:path shorthand and auto -r for dirs
+essh ls [-v]                 # list hosts from ~/.ssh/config (-v adds target, key, jump)
+essh cp <src> <dst>          # scp with alias:path shorthand and auto -r for dirs
+essh completions bash --add  # turn on Tab completion (zsh and fish too)
 ```
 
 `essh --help` and `essh <command> --help` have the rest.

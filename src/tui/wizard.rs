@@ -183,6 +183,9 @@ impl App {
         if !t.port.is_empty() {
             p.fields[3].value = t.port;
         }
+        for f in &mut p.fields[..4] {
+            f.back = 0;
+        }
         self.set_status(format!(
             "split the pasted destination into fields ({})",
             t.hostname

@@ -89,15 +89,18 @@ fn run_beside(program: &str, argv: &[String]) -> i32 {
     }
 }
 
-/// A caught signal is reset to the default in an exec'd child, so this never
-/// reaches ssh, unlike `SIG_IGN`, which ssh would inherit.
+/// Catch Ctrl-C and Ctrl-\ and do nothing with them, while a child that owns
+/// the terminal acts on them. A caught signal is reset to the default in an
+/// exec'd child, so this never reaches it, unlike `SIG_IGN`, which it would
+/// inherit. Hand the ids to `signal_hook::low_level::unregister` to stop.
 #[cfg(unix)]
-fn swallow_interrupts() {
+pub(crate) fn swallow_interrupts() -> Vec<signal_hook::SigId> {
     use signal_hook::consts::{SIGINT, SIGQUIT};
     let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    for signal in [SIGINT, SIGQUIT] {
-        let _ = signal_hook::flag::register(signal, seen.clone());
-    }
+    [SIGINT, SIGQUIT]
+        .into_iter()
+        .filter_map(|signal| signal_hook::flag::register(signal, seen.clone()).ok())
+        .collect()
 }
 
 fn could_not_run(program: &str, err: &std::io::Error) -> ! {
