@@ -52,21 +52,18 @@ impl App {
             // back to the list, so you can search then act on what you found.
             KeyCode::Esc => {
                 self.query.clear();
+                self.query_back = 0;
                 self.searching = false;
                 self.requery();
             }
             KeyCode::Enter => self.searching = false,
-            KeyCode::Backspace => {
-                self.query.pop();
-                self.requery();
-            }
             KeyCode::Down => self.move_sel(1),
             KeyCode::Up => self.move_sel(-1),
-            KeyCode::Char(c) if !ctrl => {
-                self.query.push(c);
-                self.requery();
+            _ => {
+                if line_edit::edit(&mut self.query, &mut self.query_back, key) {
+                    self.requery();
+                }
             }
-            _ => {}
         }
         None
     }
@@ -193,11 +190,29 @@ impl App {
                 // Whatever Settings says runs a login - plain ssh, or a wrapper
                 // like `kitten ssh` that wants its own arguments in front.
                 let mut argv = self.settings.ssh_argv();
+                let label = format!("{} {alias}", argv[0]);
+                let forward = match paste::serve_for(&alias) {
+                    Ok(forward) => forward,
+                    // Raised now and read on the way back, so the login is not held up.
+                    Err(e) => {
+                        self.alert(
+                            "image paste is off",
+                            format!("{e:#}\n\nThe login went ahead without it."),
+                        );
+                        None
+                    }
+                };
                 argv.push(alias.clone());
+                if let Some(f) = &forward {
+                    let at = argv.len() - 1;
+                    f.insert_into(&mut argv, at);
+                }
                 Some(PendingRun {
-                    label: format!("{} {alias}", argv[0]),
+                    label,
                     argv,
                     connect: Some(alias),
+                    forward,
+                    paste: None,
                 })
             }
             // `c` = create, the same key in every view (the tmux convention).
@@ -265,6 +280,11 @@ impl App {
                 let alias = self.selected_host()?.alias.clone();
                 self.prompt = Some(Prompt::tunnel('R', &alias));
                 None
+            }
+            // Uppercase, since both ways write on the host.
+            KeyCode::Char('P') => {
+                let alias = self.selected_host()?.alias.clone();
+                self.toggle_paste(alias)
             }
             _ => None,
         }
@@ -562,7 +582,7 @@ impl App {
                 spec.host,
                 crate::sshcfg::collapse_tilde(&local)
             ),
-            connect: None,
+            ..Default::default()
         })
     }
 }

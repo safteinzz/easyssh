@@ -58,6 +58,28 @@ the `fusermount -u` on the way out: `↵` does it and mounts it again later, and
 
 The list is `~/.config/easyssh/mounts`, one `local <- host:path` line each.
 
+## Paste images into Claude Code over ssh
+
+Claude Code on a Linux box reads a pasted image with `xclip`, and over ssh
+there is no clipboard for it to read, so Ctrl+V only says `No image found in
+clipboard`. `P` on a host turns that around: essh puts a small stand-in `xclip`
+in `~/.local/bin` there, and every `essh <host>` login after that carries this
+machine's clipboard image across the connection (`ssh -R` to a unix socket).
+Ctrl+V in Claude Code on the host then pastes what you copied here. Press `P`
+again to switch it off and remove the stand-in.
+
+- It needs Linux on the host, `~/.local/bin` ahead of `/usr/bin` in its `PATH`
+  (essh checks a login shell and tells you if it is not), and one of `python3`,
+  `perl`, `socat` or an `nc` with `-U` there to talk to the socket. Every other
+  `xclip` call is passed to the real one.
+- Here it reads the clipboard with `wl-paste`, `xclip` or `pngpaste`, whichever
+  is installed.
+- Only logins made with `essh <host>` or from the toolbox carry it, and only to
+  the hosts you enabled, listed in `~/.config/easyssh/paste`.
+- While you are connected, the host can read the image on your clipboard
+  whenever it asks, and so can anyone who is root there; text on the clipboard
+  is never sent. Enable it only on machines you trust with that.
+
 ## Manage keys
 
 ![Keys tab showing the agent and passphrase columns](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/keys.png)
@@ -97,13 +119,15 @@ Each tab's own keys are on its bottom line, and `?` lists them all.
 
 ## Tab completion
 
-Add one line to your shell's startup file and Tab completes your config's aliases after `essh`, and local paths, `alias:` and the remote side's own folders after `essh cp`:
+Tab completes your config's aliases after `essh`, and local paths, `alias:` and the remote side's own folders after `essh cp`. Turn it on once:
 
 ```bash
-source <(COMPLETE=bash essh)   # ~/.bashrc
-source <(COMPLETE=zsh essh)    # ~/.zshrc
-COMPLETE=fish essh | source    # ~/.config/fish/config.fish
+essh completions bash --add    # writes the loader into ~/.bashrc
+essh completions zsh  --add    # ~/.zshrc
+essh completions fish --add    # ~/.config/fish/config.fish
 ```
+
+Open a new shell afterwards. Without `--add` it only prints the script, so `source <(essh completions bash)` works as well.
 
 A remote path is listed over ssh without a prompt, so it completes on hosts you reach with a key or the agent and stays quiet on the rest.
 

@@ -1,6 +1,6 @@
 //! Tab completion, served by the binary itself through clap_complete's env
-//! mode: `source <(COMPLETE=bash essh)` registers it, and every Tab then runs
-//! `essh` with `COMPLETE` set. The first word completes to config aliases and
+//! mode: `essh completions bash` (or `COMPLETE=bash essh`) prints the script
+//! that registers it, and every Tab then runs `essh` with `COMPLETE` set. The first word completes to config aliases and
 //! a `cp` path completes locally, to `alias:`, or on the far side over ssh.
 
 use crate::commands::cp::remote_alias;
@@ -10,11 +10,38 @@ use clap_complete::{CompletionCandidate, PathCompleter, engine::ValueCompleter};
 use std::ffi::{OsStr, OsString};
 use std::process::{Command, Stdio};
 
+const SHELLS: Shells<'static> = Shells(&[
+    &PastHost(ColonBash),
+    &PastHost(Elvish),
+    &PastHost(Fish),
+    &PastHost(Powershell),
+    &PastHost(Zsh),
+]);
+
 /// Answers a Tab and exits when `COMPLETE` is set; returns at once otherwise.
 pub fn handle(factory: fn() -> clap::Command) {
     clap_complete::CompleteEnv::with_factory(factory)
-        .shells(Shells(&[&ColonBash, &Elvish, &Fish, &Powershell, &Zsh]))
+        .shells(SHELLS)
         .complete();
+}
+
+/// The script `COMPLETE=<shell> essh` prints, for `shell` as clap names it.
+/// `essh` calls itself back by the name it was run as, made absolute when
+/// that name is a relative path, exactly as clap_complete does.
+pub fn write_registration(
+    cmd: &clap::Command,
+    shell: &str,
+    buf: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    let completer = SHELLS
+        .completer(shell)
+        .ok_or_else(|| std::io::Error::other(format!("no completion for `{shell}`")))?;
+    let mut me = std::path::PathBuf::from(std::env::args_os().next().unwrap_or("essh".into()));
+    if me.components().count() > 1 && me.is_relative() {
+        me = std::env::current_dir()?.join(me);
+    }
+    let bin = cmd.get_bin_name().unwrap_or_else(|| cmd.get_name());
+    completer.write_registration("COMPLETE", cmd.get_name(), bin, &me.to_string_lossy(), buf)
 }
 
 /// Every alias in the config, for the destination word.
@@ -97,6 +124,58 @@ fn remote_dir(dir: &str) -> Option<String> {
     // The `/` stays bare too, or bash does not expand the `~` in front of it.
     let rest = rest.strip_prefix('/').map(|r| format!("/{}", quote(r)));
     user_ok.then(|| format!("{tilde}{}", rest.unwrap_or_default()))
+}
+
+/// A shell's completer, silenced once the cursor is past the destination word:
+/// what follows `essh raspi` belongs to ssh, while clap's engine never enters
+/// an external subcommand and would offer the aliases and subcommands again.
+struct PastHost<S>(S);
+
+impl<S: EnvCompleter> EnvCompleter for PastHost<S> {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn is(&self, name: &str) -> bool {
+        self.0.is(name)
+    }
+    fn write_registration(
+        &self,
+        var: &str,
+        name: &str,
+        bin: &str,
+        completer: &str,
+        buf: &mut dyn std::io::Write,
+    ) -> Result<(), std::io::Error> {
+        self.0.write_registration(var, name, bin, completer, buf)
+    }
+    fn write_complete(
+        &self,
+        cmd: &mut clap::Command,
+        args: Vec<OsString>,
+        current_dir: Option<&std::path::Path>,
+        buf: &mut dyn std::io::Write,
+    ) -> Result<(), std::io::Error> {
+        // Fish and PowerShell pass no index and always complete the last word.
+        let index = std::env::var("_CLAP_COMPLETE_INDEX")
+            .ok()
+            .and_then(|i| i.parse().ok())
+            .unwrap_or(args.len().saturating_sub(1));
+        if past_destination(cmd, &args, index) {
+            return Ok(());
+        }
+        self.0.write_complete(cmd, args, current_dir, buf)
+    }
+}
+
+/// Whether a word before `index` is a destination rather than a subcommand.
+fn past_destination(cmd: &mut clap::Command, args: &[OsString], index: usize) -> bool {
+    cmd.build();
+    let first = args
+        .iter()
+        .take(index)
+        .skip(1)
+        .find(|w| !w.to_string_lossy().starts_with('-'));
+    first.is_some_and(|w| w.to_str().is_none_or(|w| cmd.find_subcommand(w).is_none()))
 }
 
 fn quote(s: &str) -> String {
@@ -189,4 +268,61 @@ fn glue_colons(words: Vec<OsString>, index: usize) -> (Vec<OsString>, usize, usi
         after_colon = is_colon && glue;
     }
     (out, new_index, typed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap_complete::env::Fish;
+
+    fn words(ws: &[&str]) -> Vec<OsString> {
+        ws.iter().map(OsString::from).collect()
+    }
+
+    /// What a Tab at the end of `line` offers, as fish asks for it.
+    fn offered(line: &[&str]) -> String {
+        let mut cmd = clap::Command::new("easyssh")
+            .bin_name("essh")
+            .allow_external_subcommands(true)
+            .subcommand(clap::Command::new("self").subcommand(clap::Command::new("update")));
+        let mut out = Vec::new();
+        PastHost(Fish)
+            .write_complete(&mut cmd, words(line), None, &mut out)
+            .expect("completing never fails");
+        String::from_utf8(out).expect("completions are text")
+    }
+
+    #[test]
+    fn nothing_completes_after_the_destination_word() {
+        assert_eq!(
+            offered(&["essh", "alpha", ""]),
+            "",
+            "what follows a host belongs to ssh"
+        );
+        assert_eq!(offered(&["essh", "alpha", "-p", ""]), "");
+        assert!(
+            offered(&["essh", "self", ""]).contains("update"),
+            "a subcommand still completes its own words"
+        );
+    }
+
+    #[test]
+    fn a_path_bash_split_at_the_colon_is_glued_back_together() {
+        let (glued, index, typed) = glue_colons(words(&["essh", "cp", "raspi", ":", "~/Do"]), 4);
+        assert_eq!(glued, words(&["essh", "cp", "raspi:~/Do"]));
+        assert_eq!(index, 2, "the cursor is on the glued word");
+        assert_eq!(
+            typed,
+            "raspi:".len(),
+            "bash already has `raspi:` on the line"
+        );
+
+        let (glued, index, typed) = glue_colons(words(&["essh", "cp", "raspi", ":"]), 3);
+        assert_eq!(glued, words(&["essh", "cp", "raspi:"]));
+        assert_eq!(
+            (index, typed),
+            (2, "raspi:".len()),
+            "a bare `:` under the cursor stays"
+        );
+    }
 }

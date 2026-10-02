@@ -264,6 +264,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "ratatui",
+ "signal-hook",
 ]
 
 [[package]]

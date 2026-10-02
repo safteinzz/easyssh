@@ -137,21 +137,14 @@ impl App {
                 }
                 p.idx = p.step(1);
             }
-            KeyCode::Backspace => {
+            // Everything else is typing or editing, h/j/k/l included. A choice
+            // field holds no text, so stray keys must not accumulate in it.
+            _ => {
                 let f = self.prompt.as_mut().unwrap().cur_mut();
                 if !f.is_choice() {
-                    f.value.pop();
+                    line_edit::edit(&mut f.value, &mut f.back, key);
                 }
             }
-            // Everything else with no Ctrl held is literal text - including h/j/k/l.
-            // A choice field holds no text, so stray keys must not accumulate in it.
-            KeyCode::Char(c) if !ctrl => {
-                let f = self.prompt.as_mut().unwrap().cur_mut();
-                if !f.is_choice() {
-                    f.value.push(c);
-                }
-            }
-            _ => {}
         }
         None
     }
@@ -299,7 +292,7 @@ impl App {
                 Some(PendingRun {
                     argv,
                     label: format!("ssh-keygen -t {kind}"),
-                    connect: None,
+                    ..Default::default()
                 })
             }
 

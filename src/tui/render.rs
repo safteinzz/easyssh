@@ -381,23 +381,21 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     // While `/` is being typed the line belongs to the query: it is the only
     // place what you typed is visible.
     if app.searching {
-        let spans = vec![
-            Span::styled(
-                " /",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                app.query.clone(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("█"),
-            Span::styled(
-                format!("   {} match   ↵ keep · Esc clear", app.row_count()),
-                Style::default().add_modifier(Modifier::DIM),
-            ),
-        ];
+        let mut spans = vec![Span::styled(
+            " /",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(line_edit::with_cursor(
+            &app.query,
+            app.query_back,
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!("   {} match   ↵ keep · Esc clear", app.row_count()),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
         f.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }
@@ -455,9 +453,9 @@ pub(super) fn render_help(f: &mut Frame, area: Rect) {
         Line::raw("          m mount a remote folder locally (sshfs host: ./dir)"),
         Line::raw("          t reach a remote port from here (ssh -L)"),
         Line::raw("          T expose a local port on the host (ssh -R)"),
+        Line::raw("          P on/off: paste images into Claude Code there (xclip over ssh -R)"),
         Line::raw("          R fix \"host key changed\" (ssh-keygen -R <host>)"),
         Line::raw("          r reload · ● up · ● down · ○ checking the ssh port"),
-        Line::raw(""),
         Line::raw("Keys      c new key (ssh-keygen -t ed25519)"),
         Line::raw("          y copy the public key · Y install it on a host (ssh-copy-id)"),
         Line::raw("          agent = loaded in ssh-agent · passphrase = asks to unlock"),

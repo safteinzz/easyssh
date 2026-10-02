@@ -17,6 +17,7 @@ mod completion;
 mod history;
 mod keys;
 mod mounts;
+mod paste;
 mod reach;
 mod settings;
 mod sshcfg;
@@ -37,7 +38,7 @@ const TEMPLATE: &str =
 /// line that answers "how do I run one command on that box", so that line is in
 /// the block rather than in prose below it.
 const WAYS: &str = "\x1b[1mWays to run it (not subcommands):\x1b[0m
-  essh                    open the toolbox (TUI): hosts, keys, tunnels, mounts, adding hosts
+  essh                    open the toolbox (TUI): hosts, keys, tunnels, mounts, adding hosts, image paste
   essh <host>             connect (any unknown word is an ssh destination, e.g. `essh raspi`)
   essh <host> 'uptime'    run one command over ssh and come straight back
   essh <host> [ssh args]  anything else goes straight to ssh (`essh raspi -p 2222`)";
@@ -45,9 +46,9 @@ const WAYS: &str = "\x1b[1mWays to run it (not subcommands):\x1b[0m
 /// The rest of the block: what a script can expect, then where to look next.
 const AFTER: &str = concat!(
     "\
-A connect becomes ssh itself, so stdout, stderr and the exit code are ssh's own
-and essh's words are on stderr; `essh ls` prints a table for people, not data.
-Run `essh <command> --help` for a command's details.",
+A connect hands the terminal to ssh, so stdout, stderr and the exit code are
+ssh's own and essh's words are on stderr; `essh ls` prints a table for people,
+not data. Run `essh <command> --help` for a command's details.",
     "\n\n",
     env!("CARGO_PKG_REPOSITORY"),
     "\ncontributors: ",
@@ -89,13 +90,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// List every host in ~/.ssh/config (your `ssh?` alias, built in)
-    ///   -v   also show where each alias connects
+    ///   -v      also show where each alias connects
     #[command(verbatim_doc_comment)]
     Ls(commands::ls::Args),
     /// Copy files over scp: alias:path shorthand, auto -r for directories  <PATH> <PATH>...
     ///   essh cp notes.md raspi:~      one or more sources, then the destination
     #[command(verbatim_doc_comment)]
     Cp(commands::cp::Args),
+    /// Print the script that turns on Tab completion  <bash|zsh|fish>
+    ///   --add   add the line that loads it to your shell's startup file
+    #[command(verbatim_doc_comment)]
+    Completions(commands::completions::Args),
     /// Manage easyssh itself: `self update` reinstalls, `self check` looks for a newer release
     #[command(name = "self", subcommand)]
     Selfie(commands::selfcmd::Cmd),
@@ -118,6 +123,7 @@ fn main() {
         }
         Some(Cmd::Ls(args)) => commands::ls::run(args),
         Some(Cmd::Cp(args)) => commands::cp::run(args),
+        Some(Cmd::Completions(args)) => commands::completions::run(args, Cli::command()),
         Some(Cmd::Selfie(cmd)) => commands::selfcmd::run(cmd),
         Some(Cmd::Connect(args)) => commands::connect::run(args),
     }

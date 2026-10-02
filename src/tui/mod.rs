@@ -10,6 +10,7 @@
 use crate::history;
 use crate::keys::{self};
 use crate::mounts;
+use crate::paste;
 use crate::reach::{self, Reach};
 use crate::settings::{self, HostOrder, Settings};
 use crate::sshcfg::{self, Host};
@@ -27,7 +28,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
-use std::process::{Command, ExitStatus};
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -40,7 +41,9 @@ mod connect;
 mod detail;
 mod filter;
 mod input;
+mod line_edit;
 mod mount_spec;
+mod paste_run;
 mod picker;
 mod prompt;
 mod render;
@@ -93,6 +96,7 @@ const STATUS_TTL: Duration = Duration::from_secs(3);
 
 /// An external command the event loop must run *suspended* (outside the TUI) so
 /// it can own the terminal - connect, keygen, copy-id, mount.
+#[derive(Default)]
 pub(super) struct PendingRun {
     pub(super) argv: Vec<String>,
     pub(super) label: String,
@@ -100,6 +104,16 @@ pub(super) struct PendingRun {
     /// sniffed from `argv[0]`, which stopped being `ssh` the moment Settings
     /// could point at a wrapper.
     pub(super) connect: Option<String>,
+    /// The clipboard served to this login, stopped as soon as it returns.
+    pub(super) forward: Option<paste::Forward>,
+    /// Set when this run installs or removes the image-paste stand-in, whose
+    /// output is read afterwards and so is captured rather than shown.
+    pub(super) paste: Option<PasteJob>,
+}
+
+pub(super) enum PasteJob {
+    Install(String),
+    Remove(String),
 }
 
 pub(super) struct App {
@@ -128,6 +142,8 @@ pub(super) struct App {
     pub(super) should_quit: bool,
     /// What `/` is filtering the current list by. Empty means "show all".
     pub(super) query: String,
+    /// The cursor in `query`, as characters after it (`line_edit::edit`).
+    pub(super) query_back: usize,
     /// True while the query is being typed, so keys go into it instead of
     /// triggering actions.
     pub(super) searching: bool,
@@ -143,6 +159,8 @@ pub(super) struct App {
     /// it. The mount itself runs suspended, so it does not exist yet when the
     /// wizard hands the command over.
     pub(super) new_mount: Option<String>,
+    /// The aliases that get image paste (`~/.config/easyssh/paste`).
+    pub(super) paste: Vec<String>,
     /// The choices that are yours rather than ssh's.
     pub(super) settings: Settings,
     pub(super) settings_state: ListState,
@@ -173,6 +191,7 @@ impl App {
             show_help: false,
             should_quit: false,
             query: String::new(),
+            query_back: 0,
             searching: false,
             history: history::History::default(),
             reach: HashMap::new(),
@@ -180,6 +199,7 @@ impl App {
             reach_tx: tx,
             reach_rx: rx,
             new_mount: None,
+            paste: Vec::new(),
             settings: Settings::default(),
             settings_state: ListState::default(),
         }
@@ -256,6 +276,7 @@ impl App {
 
     pub(super) fn refresh_hosts(&mut self) {
         self.hosts = sshcfg::list_hosts();
+        self.paste = paste::enabled().into_iter().map(|e| e.alias).collect();
         self.sort_hosts();
         let n = self.host_rows().len();
         Self::clamp(&mut self.host_state, n);
@@ -618,8 +639,16 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             continue;
         }
 
-        if let Some(run) = app.on_key(key) {
-            let status = run_suspended(terminal, &run.argv)?;
+        if let Some(mut run) = app.on_key(key) {
+            let capture = run.paste.is_some().then_some(run.label.as_str());
+            let output = run_suspended(terminal, &run.argv, capture)?;
+            drop(run.forward.take());
+            if let Some(job) = run.paste.take() {
+                app.finish_paste(job, output.as_ref());
+                app.refresh_all();
+                continue;
+            }
+            let status = output.map(|o| o.status);
 
             // ssh prints why a login failed and we wipe it when we redraw, so a
             // 255 is probed again non-interactively and explained in a box.
@@ -673,7 +702,16 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
 
 /// Leave the TUI, run an interactive command with the real terminal, then
 /// restore the TUI. This is what lets ssh/ssh-keygen/ssh-copy-id/sshfs prompt.
-fn run_suspended(terminal: &mut Term, argv: &[String]) -> Result<Option<ExitStatus>> {
+///
+/// When `capture` holds a line, it is printed first and the child's stdout and
+/// stderr come back in the `Output` instead of going to the screen; ssh still
+/// asks for a password, since it asks on the tty. Otherwise they are empty.
+/// `None` means the program could not be started.
+fn run_suspended(
+    terminal: &mut Term,
+    argv: &[String],
+    capture: Option<&str>,
+) -> Result<Option<Output>> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     // ratatui hides the cursor while drawing and leaving the alt-screen does not
@@ -681,13 +719,29 @@ fn run_suspended(terminal: &mut Term, argv: &[String]) -> Result<Option<ExitStat
     // with an invisible cursor and you cannot see where you are typing.
     terminal.show_cursor()?;
 
-    let status = Command::new(&argv[0]).args(&argv[1..]).status().ok();
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    let output = if let Some(line) = capture {
+        println!("{line}");
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .and_then(|child| child.wait_with_output())
+            .ok()
+    } else {
+        cmd.status().ok().map(|status| Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })
+    };
 
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
     terminal.hide_cursor()?;
     terminal.clear()?;
-    Ok(status)
+    Ok(output)
 }
 
 fn setup() -> Result<Term> {

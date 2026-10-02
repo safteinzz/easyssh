@@ -27,4 +27,5 @@ ratatui   = "0.29"                                    # the TUI (bare `essh`)
 crossterm = "0.28"                                    # terminal backend for ratatui + key events
 colored   = "2"                                       # colored CLI output (ls, cp)
 dirs      = "5"                                        # locate ~/.ssh and the state dir portably
-clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
+clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
+signal-hook = "0.3"                                   # keep Ctrl-C for ssh while essh serves image paste

@@ -17,6 +17,8 @@ pub(crate) struct Field {
     /// label so every label stays one short noun and the values line up.
     pub(crate) hint: String,
     pub(crate) value: String,
+    /// The cursor in `value`, as characters after it (`line_edit::edit`).
+    pub(crate) back: usize,
     pub(crate) kind: Kind,
     /// Which option a `Choice` field has selected. Unused by the other kinds.
     pub(crate) choice: usize,
@@ -47,6 +49,7 @@ impl Field {
             default: default.into(),
             hint: String::new(),
             value: String::new(),
+            back: 0,
             kind: Kind::Text,
             choice: 0,
             show_if: None,
@@ -712,9 +715,11 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             spans.push(Span::raw(if active { "█ " } else { "" }));
             spans.push(Span::styled(example.clone(), dim));
             example
+        } else if active {
+            spans.extend(line_edit::with_cursor(&value, field.back, Style::default()));
+            String::new()
         } else {
             spans.push(Span::raw(value.clone()));
-            spans.push(Span::raw(if active { "█" } else { "" }));
             String::new()
         };
         texts.push(format!(
@@ -750,7 +755,7 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             Span::styled(cmd, Style::default().fg(Color::Green)),
         ]));
     }
-    let mut hint = "↑↓ tab move · ←→ choose · enter next/submit · esc cancel".to_string();
+    let mut hint = "enter next/submit · esc cancel".to_string();
     if (0..p.fields.len()).any(|i| p.visible(i) && p.fields[i].required) {
         hint.push_str(" · * required");
     }

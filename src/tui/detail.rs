@@ -88,8 +88,8 @@ fn host_lines(app: &App) -> Vec<Line<'static>> {
         }
     }
 
-    // What this host is currently doing, pulled from the other two tabs so you
-    // do not have to go and look.
+    // What this host is set up for, pulled from the other two tabs and the
+    // image-paste list so you do not have to go and look.
     let tunnels: Vec<String> = app
         .tunnels
         .iter()
@@ -102,13 +102,20 @@ fn host_lines(app: &App) -> Vec<Line<'static>> {
         .filter(|m| m.on && m.host() == h.alias)
         .map(|m| shorten(&m.local))
         .collect();
-    if !tunnels.is_empty() || !mounts.is_empty() {
+    let pastes = app.paste.contains(&h.alias);
+    if !tunnels.is_empty() || !mounts.is_empty() || pastes {
         lines.push(Line::raw(""));
         if !tunnels.is_empty() {
             lines.push(row("Tunnels", tunnels.join(", ")));
         }
         if !mounts.is_empty() {
             lines.push(row("Mounts", mounts.join(", ")));
+        }
+        if pastes {
+            lines.push(row(
+                "Paste",
+                "your clipboard images, while connected".into(),
+            ));
         }
     }
 

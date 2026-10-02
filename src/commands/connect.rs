@@ -1,7 +1,9 @@
 //! `essh <host> [ssh args…]` - just connect. Anything that isn't a known
 //! subcommand is treated as an ssh destination and handed straight to `ssh`,
 //! so all your config aliases, agent auth and extra flags keep working exactly
-//! as before. We `exec` (replace this process) so ssh owns the terminal cleanly.
+//! as before. We `exec` (replace this process) so ssh owns the terminal cleanly,
+//! except on a host with image paste on, where essh has to stay alive beside
+//! ssh to serve the clipboard (`crate::paste`).
 
 use colored::Colorize;
 
@@ -24,25 +26,88 @@ pub fn run(args: Vec<String>) {
     let launcher = crate::settings::load().ssh_argv();
     let (program, leading) = launcher.split_first().expect("ssh_argv is never empty");
     let program = program.clone();
-    let argv: Vec<String> = leading.iter().cloned().chain(args).collect();
+    let forward = match crate::paste::serve_for(&args[0]) {
+        Ok(forward) => forward,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                format!("essh: image paste is off for this login: {e:#}").yellow()
+            );
+            None
+        }
+    };
+    let mut argv: Vec<String> = leading.iter().cloned().chain(args).collect();
 
     #[cfg(unix)]
     {
+        if let Some(forward) = forward {
+            forward.insert_into(&mut argv, leading.len());
+            let code = run_beside(&program, &argv);
+            drop(forward);
+            std::process::exit(code);
+        }
         use std::os::unix::process::CommandExt;
         // exec never returns on success; ssh takes over this PID and terminal.
         let err = std::process::Command::new(&program).args(&argv).exec();
-        eprintln!("{}", format!("essh: could not run {program}: {err}").red());
-        std::process::exit(127);
+        could_not_run(&program, &err);
     }
 
     #[cfg(not(unix))]
     {
+        drop(forward);
         match std::process::Command::new(&program).args(&argv).status() {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-            Err(e) => {
-                eprintln!("{}", format!("essh: could not run {program}: {e}").red());
-                std::process::exit(127);
-            }
+            Err(e) => could_not_run(&program, &e),
         }
     }
+}
+
+/// Run ssh as a child and return the exit code a shell would report for it,
+/// `128 + signal` when a signal ended it.
+///
+/// Ctrl-C and Ctrl-\ reach every process on the terminal, and they are ssh's to
+/// act on, so essh catches them and does nothing once ssh has started.
+#[cfg(unix)]
+fn run_beside(program: &str, argv: &[String]) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    let mut child = match std::process::Command::new(program).args(argv).spawn() {
+        Ok(child) => child,
+        Err(e) => could_not_run(program, &e),
+    };
+    swallow_interrupts();
+    match child.wait() {
+        Ok(status) => status
+            .code()
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
+        Err(e) => {
+            eprintln!(
+                "{}",
+                format!("essh: lost track of {program}: {}", e.kind()).red()
+            );
+            1
+        }
+    }
+}
+
+/// A caught signal is reset to the default in an exec'd child, so this never
+/// reaches ssh, unlike `SIG_IGN`, which ssh would inherit.
+#[cfg(unix)]
+fn swallow_interrupts() {
+    use signal_hook::consts::{SIGINT, SIGQUIT};
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for signal in [SIGINT, SIGQUIT] {
+        let _ = signal_hook::flag::register(signal, seen.clone());
+    }
+}
+
+fn could_not_run(program: &str, err: &std::io::Error) -> ! {
+    let why = match err.kind() {
+        std::io::ErrorKind::NotFound => "it is not installed or not on PATH".to_string(),
+        kind => kind.to_string(),
+    };
+    eprintln!(
+        "{}",
+        format!("essh: could not run `{program}`: {why}").red()
+    );
+    std::process::exit(127);
 }

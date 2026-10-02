@@ -78,7 +78,7 @@ pub(super) fn classify(host: &str, text: &str) -> Option<Diagnosis> {
 /// ssh's stderr without the chatter, at most five lines in their order. The
 /// lines that say what failed are kept first, since a server banner or
 /// OpenSSH's post-quantum notice can come before them and fill the five.
-fn said(text: &str) -> String {
+pub(super) fn said(text: &str) -> String {
     const FAILED: [&str; 9] = [
         "Permission denied",
         "Connection refused",

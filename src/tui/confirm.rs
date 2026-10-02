@@ -79,6 +79,9 @@ pub(crate) enum ConfirmAction {
     IdentitiesOnly {
         alias: String,
     },
+    /// Install the image-paste stand-in on a host and add it to
+    /// `~/.config/easyssh/paste`.
+    InstallPaste(String),
     /// Drop a forward's line from `~/.config/easyssh/tunnels`, stopping it first.
     DeleteTunnel {
         kind: char,
@@ -212,6 +215,7 @@ impl App {
                     Err(e) => self.set_failed(format!("could not edit {alias}: {e}")),
                 }
             }
+            ConfirmAction::InstallPaste(alias) => return Some(self.install_paste(alias)),
             ConfirmAction::ClearKnownHost { target } => {
                 let out = Command::new("ssh-keygen").arg("-R").arg(&target).output();
                 let (ok, msg) = match out {

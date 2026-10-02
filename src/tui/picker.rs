@@ -137,12 +137,13 @@ impl App {
                         dest.clone(),
                     ],
                     label: format!("ssh-copy-id -> {dest}"),
-                    connect: None,
+                    ..Default::default()
                 })
             }
             PickerAction::FillField { field } => {
                 if let Some(f) = self.prompt.as_mut().and_then(|p| p.fields.get_mut(field)) {
                     f.value = choice;
+                    f.back = 0;
                 }
                 None
             }
