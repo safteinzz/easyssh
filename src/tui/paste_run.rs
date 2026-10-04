@@ -5,8 +5,8 @@ use super::*;
 use confirm::ConfirmAction;
 
 impl App {
-    /// On behind a gate, because it lets the host read your clipboard; off at
-    /// once, because the line goes first and that alone stops the forwarding.
+    /// Both ways go behind a gate: on lets the host read your clipboard, and off
+    /// deletes the stand-in there, which only that gate brings back.
     pub(super) fn toggle_paste(&mut self, alias: String) -> Option<PendingRun> {
         if !self.paste.contains(&alias) {
             self.confirm = Some(Confirm::new(
@@ -18,6 +18,18 @@ impl App {
             ));
             return None;
         }
+        self.confirm = Some(Confirm::new(
+            "image paste",
+            format!(
+                "Turn off image paste for {alias}? Its stand-in ~/.local/bin/xclip is removed there, and logins stop carrying your clipboard."
+            ),
+            ConfirmAction::RemovePaste(alias),
+        ));
+        None
+    }
+
+    /// The line goes first, because that alone stops the forwarding.
+    pub(super) fn remove_paste(&mut self, alias: String) -> Option<PendingRun> {
         if let Err(e) = paste::forget(&alias) {
             self.set_failed(format!("image paste is still on for {alias}: {e:#}"));
             return None;

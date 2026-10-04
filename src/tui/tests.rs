@@ -751,3 +751,27 @@ fn jumping_to_a_view_drops_the_filter_that_led_there() {
     assert!(app.query.is_empty());
     assert!(matches!(app.view, View::Mounts));
 }
+
+#[test]
+fn turning_image_paste_off_changes_nothing_until_yes() {
+    let mut app = app_with_host();
+    app.paste = vec!["raspi".into()];
+
+    let run = app.on_key(press(KeyCode::Char('P')));
+    assert!(
+        run.is_none(),
+        "P on an enabled host must not run the removal at once"
+    );
+    assert!(app.confirm.is_some(), "P on an enabled host opens a gate");
+    assert_eq!(
+        app.paste,
+        ["raspi"],
+        "nothing is turned off before the answer"
+    );
+
+    // The gate starts on No, so a reflex Enter keeps it on.
+    let run = app.on_key(press(KeyCode::Enter));
+    assert!(run.is_none(), "answering No removes nothing on the host");
+    assert!(app.confirm.is_none(), "the gate is gone after the answer");
+    assert_eq!(app.paste, ["raspi"], "image paste stays on after No");
+}

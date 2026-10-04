@@ -82,6 +82,9 @@ pub(crate) enum ConfirmAction {
     /// Install the image-paste stand-in on a host and add it to
     /// `~/.config/easyssh/paste`.
     InstallPaste(String),
+    /// Remove the image-paste stand-in from a host and drop its line from
+    /// `~/.config/easyssh/paste`.
+    RemovePaste(String),
     /// Drop a forward's line from `~/.config/easyssh/tunnels`, stopping it first.
     DeleteTunnel {
         kind: char,
@@ -216,6 +219,7 @@ impl App {
                 }
             }
             ConfirmAction::InstallPaste(alias) => return Some(self.install_paste(alias)),
+            ConfirmAction::RemovePaste(alias) => return self.remove_paste(alias),
             ConfirmAction::ClearKnownHost { target } => {
                 let out = Command::new("ssh-keygen").arg("-R").arg(&target).output();
                 let (ok, msg) = match out {
