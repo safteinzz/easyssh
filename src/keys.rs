@@ -206,3 +206,73 @@ pub fn is_public_key(path: &Path) -> bool {
         .iter()
         .any(|p| first.starts_with(p))
 }
+
+/// What `install_via_argv` exits with when the key was already listed there.
+pub const ALREADY_AUTHORIZED: i32 = 3;
+/// What it exits with once the key is added. Not 0, because `sh` fed nothing
+/// by a `base64 -d` that failed also exits 0.
+pub const ADDED: i32 = 4;
+
+/// The `.pub` beside a private key, appended rather than swapped in, since
+/// `work.ed25519` pairs with `work.ed25519.pub`.
+pub fn pub_path(private: &Path) -> PathBuf {
+    let mut name = private.as_os_str().to_owned();
+    name.push(".pub");
+    PathBuf::from(name)
+}
+
+/// The command that logs in to `via` and from there to `target`, and appends
+/// `pubkey` (one `.pub` line) to `login`'s authorized_keys there. It is run
+/// with a terminal, so either hop can ask for a password; it exits
+/// `ALREADY_AUTHORIZED` when the key was already listed and `ADDED` once it is
+/// added, so a 0 means the script never ran.
+///
+/// `via` reaches `target` by `target`'s alias when its own config defines it,
+/// and by `login`'s HostName and port otherwise, but always as `login.user`,
+/// since that user's authorized_keys is the one this machine logs in to.
+pub fn install_via_argv(
+    via: &str,
+    target: &str,
+    login: &crate::sshcfg::Login,
+    pubkey: &str,
+) -> Option<Vec<String>> {
+    let blob = pubkey.split_whitespace().nth(1)?;
+    let append = format!(
+        r#"umask 077
+mkdir -p "$HOME/.ssh" || exit 1
+f="$HOME/.ssh/authorized_keys"
+if [ -f "$f" ] && grep -v '^[[:space:]]*#' "$f" | grep -qF {blob}; then exit {ALREADY_AUTHORIZED}; fi
+if [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ]; then echo >> "$f"; fi
+printf '%s\n' {key} >> "$f" && exit {ADDED}
+"#,
+        blob = crate::completion::quote(blob),
+        key = crate::completion::quote(pubkey),
+    );
+    // `ssh -G` prints the HostName lowercased, and the alias itself when the
+    // config has no block for it.
+    let hop = format!(
+        r#"dest={alias}
+case "$(ssh -G "$dest" 2>/dev/null | awk '$1 == "hostname" {{ print $2; exit }}')" in
+  {lower} | "") set -- -p {port} {hostname} ;;
+  *) set -- "$dest" ;;
+esac
+ssh -o RemoteCommand=none -o RequestTTY=no -o ClearAllForwardings=yes -l {user} "$@" {remote} </dev/null
+"#,
+        alias = crate::completion::quote(target),
+        lower = crate::completion::quote(&target.to_lowercase()),
+        port = crate::completion::quote(&login.port),
+        hostname = crate::completion::quote(&login.hostname),
+        user = crate::completion::quote(&login.user),
+        remote = crate::completion::quote(&crate::paste::sh_line(&append)),
+    );
+    Some(vec![
+        "ssh".into(),
+        "-t".into(),
+        "-o".into(),
+        "RemoteCommand=none".into(),
+        "-o".into(),
+        "ClearAllForwardings=yes".into(),
+        via.into(),
+        crate::paste::sh_line(&hop),
+    ])
+}

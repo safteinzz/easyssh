@@ -79,6 +79,11 @@ pub(crate) enum ConfirmAction {
     IdentitiesOnly {
         alias: String,
     },
+    /// Pick a host that can already log in to `target`, to add `key` there through it.
+    KeyVia {
+        target: String,
+        key: PathBuf,
+    },
     /// Install the image-paste stand-in on a host and add it to
     /// `~/.config/easyssh/paste`.
     InstallPaste(String),
@@ -102,20 +107,20 @@ pub(super) fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
     let accent = if c.danger { Color::Red } else { Color::Cyan };
     let width = box_width(area.width);
     let msg_rows = wrapped_line_count(&c.message, box_inner_width(width)) as u16;
-    // The message, a blank, and the button row.
     // The message, a blank, the buttons, a blank, the keys.
     let rect = box_area(area, width, box_height(msg_rows + 4, area.height));
     f.render_widget(Clear, rect);
 
-    let para = Paragraph::new(vec![
-        Line::raw(c.message.clone()),
+    let mut lines: Vec<Line> = c.message.lines().map(Line::raw).collect();
+    lines.extend([
         Line::raw(""),
         box_buttons(accent, c.yes),
         Line::raw(""),
         box_hint("h/l ←/→ move · enter select · y/n"),
-    ])
-    .block(box_block(accent, &c.title))
-    .wrap(Wrap { trim: false });
+    ]);
+    let para = Paragraph::new(lines)
+        .block(box_block(accent, &c.title))
+        .wrap(Wrap { trim: false });
     f.render_widget(para, rect);
 }
 
@@ -218,6 +223,7 @@ impl App {
                     Err(e) => self.set_failed(format!("could not edit {alias}: {e}")),
                 }
             }
+            ConfirmAction::KeyVia { target, key } => self.pick_key_via(target, key),
             ConfirmAction::InstallPaste(alias) => return Some(self.install_paste(alias)),
             ConfirmAction::RemovePaste(alias) => return self.remove_paste(alias),
             ConfirmAction::ClearKnownHost { target } => {
@@ -262,6 +268,22 @@ impl App {
             ),
             ConfirmAction::IdentitiesOnly {
                 alias: alias.to_string(),
+            },
+        ));
+    }
+
+    /// Offer to add `key` to a host that takes keys only and none of ours,
+    /// through a host that can already log in there.
+    pub(super) fn offer_key_via(&mut self, host: &str, key: PathBuf) {
+        let name = key.file_name().unwrap_or_default().to_string_lossy();
+        self.confirm = Some(Confirm::offer(
+            "no way in",
+            format!(
+                "{host} accepts keys only and none of yours, so ssh-copy-id cannot log in. Add {name}.pub there through another host that can (ssh -t <that host> ssh {host})?"
+            ),
+            ConfirmAction::KeyVia {
+                target: host.to_string(),
+                key,
             },
         ));
     }

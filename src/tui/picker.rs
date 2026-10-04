@@ -19,6 +19,11 @@ pub(crate) enum PickerAction {
     CopyKeyTo {
         key: PathBuf,
     },
+    /// Add `key` to `target` through the picked host.
+    CopyKeyVia {
+        key: PathBuf,
+        target: String,
+    },
     NewKeyType,
     /// Write the chosen value into the active wizard's field at this index (used
     /// to pick a key for IdentityFile instead of typing the path).
@@ -129,16 +134,12 @@ impl App {
                     .next()
                     .unwrap_or(&choice)
                     .to_string();
-                Some(PendingRun {
-                    argv: vec![
-                        "ssh-copy-id".into(),
-                        "-i".into(),
-                        key.to_string_lossy().into_owned(),
-                        dest.clone(),
-                    ],
-                    label: format!("ssh-copy-id -> {dest}"),
-                    ..Default::default()
-                })
+                self.start_copy_check(dest, key);
+                None
+            }
+            PickerAction::CopyKeyVia { key, target } => {
+                let via = choice.split_whitespace().next().unwrap_or(&choice);
+                self.key_via_run(key, target, via.to_string())
             }
             PickerAction::FillField { field } => {
                 if let Some(f) = self.prompt.as_mut().and_then(|p| p.fields.get_mut(field)) {

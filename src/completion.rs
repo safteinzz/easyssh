@@ -182,7 +182,7 @@ fn past_destination(cmd: &mut clap::Command, args: &[OsString], index: usize) ->
     first.is_some_and(|w| w.to_str().is_none_or(|w| cmd.find_subcommand(w).is_none()))
 }
 
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 

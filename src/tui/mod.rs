@@ -108,6 +108,16 @@ pub(super) struct PendingRun {
     /// Set when this run installs or removes the image-paste stand-in, whose
     /// output is read afterwards and so is captured rather than shown.
     pub(super) paste: Option<PasteJob>,
+    /// Set when this run adds a key to a host through another one, whose exit
+    /// code says whether it was already there.
+    pub(super) key_via: Option<KeyVia>,
+}
+
+pub(super) struct KeyVia {
+    pub(super) key: String,
+    pub(super) target: String,
+    pub(super) via: String,
+    pub(super) user: String,
 }
 
 pub(super) enum PasteJob {
@@ -158,6 +168,8 @@ pub(super) struct App {
     /// it. The mount itself runs suspended, so it does not exist yet when the
     /// wizard hands the command over.
     pub(super) new_mount: Option<String>,
+    /// A `Y` waiting to learn whether ssh-copy-id can log in at all.
+    pub(super) copy_check: Option<connect::CopyCheck>,
     /// The aliases that get image paste (`~/.config/easyssh/paste`).
     pub(super) paste: Vec<String>,
     /// The choices that are yours rather than ssh's.
@@ -198,6 +210,7 @@ impl App {
             reach_tx: tx,
             reach_rx: rx,
             new_mount: None,
+            copy_check: None,
             paste: Vec::new(),
             settings: Settings::default(),
             settings_state: ListState::default(),
@@ -249,6 +262,9 @@ impl App {
 
     /// The status message while it is still fresh; `None` once it has expired.
     pub(super) fn live_status(&self) -> Option<&str> {
+        if let Some(c) = &self.copy_check {
+            return Some(&c.status);
+        }
         let at = self.status_at?;
         (at.elapsed() < STATUS_TTL && !self.status.is_empty()).then_some(self.status.as_str())
     }
@@ -624,21 +640,17 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
         } else {
             Duration::from_secs(3600)
         };
-        if !event::poll(timeout)? {
-            app.drain_probes();
-            continue; // nothing pressed: redraw so the stale status drops off
+        let mut run = None;
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+            // crossterm emits Press+Release on some platforms; act on Press only.
+            && key.kind == KeyEventKind::Press
+        {
+            run = app.on_key(key);
         }
         app.drain_probes();
-
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        // crossterm emits Press+Release on some platforms; act on Press only.
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-
-        if let Some(mut run) = app.on_key(key) {
+        // With nothing pressed this is just a redraw, so a stale status drops off.
+        if let Some(mut run) = run.or_else(|| app.drain_copy_check()) {
             let capture = run.paste.is_some().then_some(run.label.as_str());
             let output = run_suspended(terminal, &run.argv, capture)?;
             drop(run.forward.take());
@@ -652,7 +664,10 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             // ssh prints why a login failed and we wipe it when we redraw, so a
             // 255 is probed again non-interactively and explained in a box.
             let failed_255 = matches!(status, Some(ref s) if s.code() == Some(255));
-            let mut explained = false;
+            let mut explained = run
+                .key_via
+                .as_ref()
+                .is_some_and(|kv| app.explain_key_via(kv, status.as_ref().and_then(|s| s.code())));
             if let Some(host) = run.connect.clone() {
                 if failed_255 {
                     if let Some((d, said)) = diagnose(&host) {

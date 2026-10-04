@@ -158,11 +158,14 @@ fn remote_sh(alias: &str, script: &str) -> Vec<String> {
     .map(String::from)
     .to_vec();
     argv.push(alias.into());
-    argv.push(format!(
-        "echo {} | base64 -d | sh",
-        base64(script.as_bytes())
-    ));
+    argv.push(sh_line(script));
     argv
+}
+
+/// A remote command line that runs `script` under `sh`, whatever the login
+/// shell is and without any shell parsing the script itself.
+pub(crate) fn sh_line(script: &str) -> String {
+    format!("echo {} | base64 -d | sh", base64(script.as_bytes()))
 }
 
 /// The command that installs the stand-in on `alias`.

@@ -1,6 +1,7 @@
 //! Reading what ssh said when a connection failed, so the app can offer the fix.
 
 use super::*;
+use picker::PickerAction;
 
 /// Why a login failed, as far as ssh's own words tell.
 #[derive(Debug, PartialEq)]
@@ -19,9 +20,10 @@ pub(super) enum Diagnosis {
     Unreachable,
 }
 
-/// Re-run a failed login non-interactively and classify it. Runs only after a
-/// connect exited 255, so it costs nothing on the success path. Returns the
-/// diagnosis and ssh's own lines, cut to what says what failed.
+/// Re-run a login non-interactively and classify how it failed: after a
+/// connect exited 255, and on a background thread before `Y` installs a key.
+/// Blocks for up to the 6 s connect timeout. Returns the diagnosis and ssh's
+/// own lines, cut to what says what failed.
 pub(super) fn diagnose(host: &str) -> Option<(Diagnosis, String)> {
     let out = Command::new("ssh")
         .args([
@@ -133,7 +135,75 @@ pub(super) fn parse_r_target(text: &str) -> Option<String> {
     (!target.is_empty()).then(|| target.to_string())
 }
 
+/// A `Y` whose host is being probed off the event loop.
+pub(crate) struct CopyCheck {
+    pub(super) dest: String,
+    pub(super) key: PathBuf,
+    /// What the status line says while it waits.
+    pub(super) status: String,
+    /// Whether the host takes keys only and none of ours.
+    rx: Receiver<bool>,
+}
+
 impl App {
+    /// Probe `dest` before ssh-copy-id, which has to log in first, with a key
+    /// that already works or a password.
+    pub(super) fn start_copy_check(&mut self, dest: String, key: PathBuf) {
+        let (tx, rx) = channel();
+        let probe = dest.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(matches!(diagnose(&probe), Some((Diagnosis::KeysOnly, _))));
+        });
+        self.copy_check = Some(CopyCheck {
+            status: format!("checking how {dest} lets you in (ssh -o BatchMode=yes {dest})"),
+            dest,
+            key,
+            rx,
+        });
+    }
+
+    /// The finished probe: ssh-copy-id when it can log in, otherwise the offer
+    /// to go through a host that can. Dropped when another box opened meanwhile,
+    /// so neither lands on top of something else.
+    pub(super) fn drain_copy_check(&mut self) -> Option<PendingRun> {
+        let keys_only = match self.copy_check.as_ref()?.rx.try_recv() {
+            Ok(k) => k,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        };
+        let CopyCheck { dest, key, .. } = self.copy_check.take()?;
+        if self.prompt.is_some()
+            || self.picker.is_some()
+            || self.confirm.is_some()
+            || self.alert.is_some()
+        {
+            self.set_status(format!(
+                "cancelled ssh-copy-id -> {dest}, because another box is open"
+            ));
+            return None;
+        }
+        if !keys_only {
+            return Some(PendingRun {
+                argv: vec![
+                    "ssh-copy-id".into(),
+                    "-i".into(),
+                    key.to_string_lossy().into_owned(),
+                    dest.clone(),
+                ],
+                label: format!("ssh-copy-id -> {dest}"),
+                ..Default::default()
+            });
+        }
+        if self.hosts.iter().all(|h| h.alias == dest) {
+            self.set_failed(format!(
+                "{dest} accepts keys only and none of yours, and there is no other host here to go through"
+            ));
+            return None;
+        }
+        self.offer_key_via(&dest, key);
+        None
+    }
+
     /// Turn a diagnosed login failure into the box that says what to do: an
     /// offer where the app can make the fix, an alert where only you can.
     pub(super) fn explain_connect_failure(&mut self, host: &str, d: Diagnosis, said: &str) {
@@ -173,7 +243,7 @@ impl App {
             Diagnosis::KeysOnly => self.alert(
                 "no key accepted",
                 format!(
-                    "{host} accepts keys only, and none of the ones ssh offered is in its authorized_keys. Check the User, or have someone who can log in add your public key (`y` on Keys copies it).\n\n{cmd}\n\n{said}"
+                    "{host} accepts keys only, and none of the ones ssh offered is in its authorized_keys. Check the User, or install your public key with `Y` on Keys, which can go through another host that already logs in there.\n\n{cmd}\n\n{said}"
                 ),
             ),
             Diagnosis::Refused => {
@@ -204,6 +274,112 @@ impl App {
                 self.alert("no answer", format!("{why}\n\n{cmd}\n\n{said}"))
             }
         }
+    }
+
+    /// Open the picker of hosts to add `key` to `target` through, its jump
+    /// first, since that is the host that already reaches it.
+    pub(super) fn pick_key_via(&mut self, target: String, key: PathBuf) {
+        let jump = self
+            .hosts
+            .iter()
+            .find(|h| h.alias == target)
+            .filter(|h| h.jumped())
+            .and_then(|h| h.proxy_jump.clone());
+        // ssh_config's `[user@]host[:port]`, and of a chain the last hop,
+        // which is the one that reaches the target.
+        let jump = jump
+            .as_deref()
+            .and_then(|j| j.rsplit(',').next())
+            .map(|hop| {
+                let hop = hop.trim();
+                let hop = hop.rsplit_once('@').map_or(hop, |(_, h)| h);
+                hop.split(':').next().unwrap_or(hop).to_string()
+            });
+        let mut hosts: Vec<&Host> = self.hosts.iter().filter(|h| h.alias != target).collect();
+        hosts.sort_by_key(|h| Some(&h.alias) != jump.as_ref());
+        let width = hosts.iter().map(|h| h.alias.len()).max().unwrap_or(0);
+        self.picker = Some(Picker {
+            title: format!("Which host can already log in to {target}?"),
+            items: hosts
+                .iter()
+                .map(|h| format!("{:width$}  {}", h.alias, h.target()))
+                .collect(),
+            idx: 0,
+            action: PickerAction::CopyKeyVia { key, target },
+        });
+    }
+
+    /// The run that adds `key` to `target` from `via`.
+    pub(super) fn key_via_run(
+        &mut self,
+        key: PathBuf,
+        target: String,
+        via: String,
+    ) -> Option<PendingRun> {
+        let name = key.file_name()?.to_string_lossy().into_owned();
+        let pubpath = keys::pub_path(&key);
+        let pubkey = match fs::read_to_string(&pubpath) {
+            Ok(text) => text.lines().next().unwrap_or("").trim().to_string(),
+            Err(e) => {
+                self.set_failed(format!(
+                    "cannot read `{}` ({}), so nothing was copied: `r` reloads the keys",
+                    sshcfg::collapse_tilde(&pubpath.to_string_lossy()),
+                    e.kind()
+                ));
+                return None;
+            }
+        };
+        let Some(login) = sshcfg::resolve(&target) else {
+            self.set_failed(format!(
+                "`ssh -G {target}` did not say who to log in as, so nothing was copied"
+            ));
+            return None;
+        };
+        let Some(argv) = keys::install_via_argv(&via, &target, &login, &pubkey) else {
+            self.set_failed(format!(
+                "{name}.pub is not a public key line, so nothing was copied"
+            ));
+            return None;
+        };
+        Some(PendingRun {
+            argv,
+            label: format!(
+                "adding {name}.pub to {target} through {via} (ssh -t {via} ssh {target})"
+            ),
+            key_via: Some(KeyVia {
+                key: name,
+                target,
+                via,
+                user: login.user,
+            }),
+            ..Default::default()
+        })
+    }
+
+    /// Report the codes only this run has a meaning for, and say whether it did.
+    pub(super) fn explain_key_via(&mut self, kv: &KeyVia, code: Option<i32>) -> bool {
+        let KeyVia {
+            key,
+            target,
+            via,
+            user,
+        } = kv;
+        match code {
+            Some(keys::ADDED) => {
+                self.set_status(format!("added {key}.pub to {target} through {via}"))
+            }
+            Some(0) => self.set_failed(format!(
+                "nothing was added to {target}: the script never ran, so check that `base64` is installed on {via} and {target}"
+            )),
+            Some(keys::ALREADY_AUTHORIZED) => self.alert(
+                "key already there",
+                format!(
+                    "{user}'s authorized_keys on {target} already lists {key}.pub, so a missing key is not why it refused. Check the User (`e` on Hosts edits it), or the permissions there: sshd ignores an authorized_keys, ~/.ssh or home folder that others can write to.\n\nssh -t {via} ssh {target}"
+                ),
+            ),
+            _ => return false,
+        }
+        true
     }
 }
 

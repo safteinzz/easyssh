@@ -212,7 +212,7 @@ impl App {
                     argv,
                     connect: Some(alias),
                     forward,
-                    paste: None,
+                    ..Default::default()
                 })
             }
             // `c` = create, the same key in every view (the tmux convention).
@@ -339,7 +339,7 @@ impl App {
             // itself, for the web form or the ticket asking for it.
             KeyCode::Char('y') => {
                 let path = self.selected_key()?.path.clone();
-                let pubpath = path.with_extension("pub");
+                let pubpath = keys::pub_path(&path);
                 let (ok, msg) = match fs::read_to_string(&pubpath) {
                     Ok(text) => match crate::clip::copy(text.trim()) {
                         Ok(tool) => (
@@ -351,7 +351,14 @@ impl App {
                         ),
                         Err(e) => (false, format!("clipboard: {e}")),
                     },
-                    Err(e) => (false, format!("cannot read {}: {e}", pubpath.display())),
+                    Err(e) => (
+                        false,
+                        format!(
+                            "cannot read `{}` ({}): `r` reloads the keys",
+                            sshcfg::collapse_tilde(&pubpath.to_string_lossy()),
+                            e.kind()
+                        ),
+                    ),
                 };
                 self.set_result(ok, msg);
                 None

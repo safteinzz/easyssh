@@ -219,6 +219,33 @@ pub fn forward_agent_for(alias: &str) -> String {
     effective_forward_agent(&text, alias)
 }
 
+/// Who and where `ssh <alias>` logs in to, as ssh itself resolves it.
+pub struct Login {
+    pub user: String,
+    pub hostname: String,
+    pub port: String,
+}
+
+/// `ssh -G <alias>`, so wildcard blocks, `%` tokens and the login-name default
+/// are ssh's answer rather than ours. `None` when ssh could not be run.
+pub fn resolve(alias: &str) -> Option<Login> {
+    let out = std::process::Command::new("ssh")
+        .args(["-G", alias])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let get = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(' '))
+            .map(str::to_string)
+    };
+    Some(Login {
+        user: get("user")?,
+        hostname: get("hostname")?,
+        port: get("port")?,
+    })
+}
+
 /// ssh_config's `*` and `?` against one name. A negated pattern matches
 /// nothing here, since on its own it only ever excludes.
 fn wildmatch(pattern: &str, name: &str) -> bool {
