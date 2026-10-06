@@ -8,7 +8,7 @@ use super::*;
 /// typed `~` expanded because sshfs is spawned without a shell and would
 /// otherwise mount onto a directory named `~`. Shared by `submit_prompt` and
 /// `command_preview` so the preview cannot drift from the command that runs.
-pub(super) fn mount_point(default: &str, typed: &str) -> String {
+pub(crate) fn mount_point(default: &str, typed: &str) -> String {
     let raw = if typed.is_empty() { default } else { typed };
     sshcfg::expand_tilde(raw).to_string_lossy().into_owned()
 }
@@ -16,7 +16,7 @@ pub(super) fn mount_point(default: &str, typed: &str) -> String {
 /// The remote path as sftp needs it: a leading `~` or `~/` is dropped, because
 /// sftp resolves a relative path against the login home but has no `~` of its
 /// own and would look for a directory literally named `~`.
-pub(super) fn remote_path(typed: &str) -> &str {
+pub(crate) fn remote_path(typed: &str) -> &str {
     match typed.strip_prefix('~') {
         Some("") => "",
         Some(rest) if rest.starts_with('/') => rest.trim_start_matches('/'),
@@ -83,7 +83,7 @@ impl MountSpec {
 
     /// The mount a kept line describes, for turning it back on. Whether the host
     /// forces a command is asked again, since the config may have changed.
-    pub(super) fn from_saved(m: &mounts::Mount) -> Self {
+    pub(crate) fn from_saved(m: &mounts::Mount) -> Self {
         let (host, path) = m.remote.split_once(':').unwrap_or((&m.remote, ""));
         let alias = host.rsplit('@').next().unwrap_or(host);
         Self {
@@ -101,7 +101,7 @@ impl MountSpec {
     }
 
     /// The line this mount is kept as.
-    pub(super) fn saved(&self) -> mounts::Saved {
+    pub(crate) fn saved(&self) -> mounts::Saved {
         mounts::Saved {
             remote: format!("{}:{}", self.host, self.remote),
             local: self.local.clone(),
@@ -110,14 +110,14 @@ impl MountSpec {
     }
 
     /// The `-o sftp_server=…` value, or `None` for a plain mount.
-    pub(super) fn sftp_server(&self) -> Option<String> {
+    pub(crate) fn sftp_server(&self) -> Option<String> {
         match self.sudo {
             Sudo::No => None,
             Sudo::NoPasswd => Some(format!("sftp_server=sudo {}", self.server)),
         }
     }
 
-    pub(super) fn argv(&self) -> Vec<String> {
+    pub(crate) fn argv(&self) -> Vec<String> {
         let mut argv = vec!["sshfs".to_string()];
         // A RemoteCommand would run instead of the sftp server, and libfuse rejects
         // `-o RemoteCommand=none` outright ("fuse: unknown option(s)"), so it has to
@@ -138,7 +138,7 @@ impl MountSpec {
 
     /// Why this mount cannot be built, if so - checked before spawning so the
     /// user gets a sentence instead of a puzzling sshfs failure.
-    pub(super) fn problem(&self) -> Option<String> {
+    pub(crate) fn problem(&self) -> Option<String> {
         // sshfs splits `-o` values on commas, so one inside the option is read as
         // the start of another option and the mount fails with nothing useful.
         if self.sudo != Sudo::No && self.server.contains(',') {
@@ -150,7 +150,7 @@ impl MountSpec {
 
 /// Render an argv the way you would type it, quoting the arguments that contain
 /// spaces. Only used for the preview line, never to run anything.
-pub(super) fn shell_join(argv: &[String]) -> String {
+pub(crate) fn shell_join(argv: &[String]) -> String {
     argv.iter()
         .map(|a| {
             if a.contains(' ') {

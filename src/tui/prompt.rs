@@ -4,6 +4,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
+use super::widgets::{FORM_KEYS, REQUIRED, SEP};
 use super::*;
 
 /// One editable line in a wizard: a label in the left column, a value in the
@@ -207,8 +208,8 @@ impl Prompt {
                 Field::new("HostName", "").hint("IP or DNS name"),
                 Field::new("User", ""),
                 Field::new("Port", "22"),
-                Field::new("IdentityFile", "").hint("a key in ~/.ssh"),
-                Field::new("ProxyJump", "").hint("a host to hop through"),
+                Field::new("IdentityFile", "").hint("ctrl-o to pick · or type a key path"),
+                Field::new("ProxyJump", "").hint("ctrl-o to pick · or type a jump host"),
                 Field::new("RemoteCommand", "").hint("runs instead of a shell, e.g. pwsh"),
                 forward_agent_field(None),
             ],
@@ -232,9 +233,9 @@ impl Prompt {
                 Field::filled("User", h.user.as_deref().unwrap_or("")),
                 Field::filled("Port", h.port.as_deref().unwrap_or("")),
                 Field::filled("IdentityFile", h.identity.as_deref().unwrap_or(""))
-                    .hint("a key in ~/.ssh"),
+                    .hint("ctrl-o to pick · or type a key path"),
                 Field::filled("ProxyJump", h.proxy_jump.as_deref().unwrap_or(""))
-                    .hint("a host to hop through"),
+                    .hint("ctrl-o to pick · or type a jump host"),
                 Field::filled("RemoteCommand", h.remote_command.as_deref().unwrap_or(""))
                     .hint("runs instead of a shell, e.g. pwsh"),
                 forward_agent_field(Some(&sshcfg::forward_agent_for(&h.alias))),
@@ -283,10 +284,10 @@ impl Prompt {
         }
     }
 
-    /// The tunnel wizard, one form for both directions and both ways in: `t`
+    /// The tunnel wizard, one form for every direction and both ways in: `t`
     /// and `T` on a host pre-answer the direction and the host, `c` on the
-    /// Tunnels tab answers neither. The two halves of the form are the two
-    /// directions, and only the one being asked for is ever on screen.
+    /// Tunnels tab answers neither. The parts of the form are the directions,
+    /// and only the one being asked for is ever on screen.
     pub(super) fn tunnel(kind: char, host: &str) -> Self {
         let mut p = Self {
             title: "open a port forward (ssh -N)".into(),
@@ -294,14 +295,18 @@ impl Prompt {
             action: Action::Tunnel { editing: None },
             fields: tunnel_fields(),
         };
-        p.fields[T_DIR].choice = usize::from(kind == 'R');
+        p.fields[T_DIR].choice = direction(kind);
         // The host is answered by the row this was opened from, so it is carried in
         // the title instead, and the cursor starts on the first open question.
         if !host.is_empty() {
             p.title = format!("open a port forward on {host} (ssh -N)");
             p.fields[T_HOST].value = host.to_string();
             p.fields[T_HOST].fixed = true;
-            p.idx = if kind == 'R' { T_R_OPEN } else { T_L_OPEN };
+            p.idx = match kind {
+                'R' => T_R_OPEN,
+                'D' => T_D_PORT,
+                _ => T_L_OPEN,
+            };
         }
         p
     }
@@ -322,9 +327,13 @@ impl Prompt {
             },
             fields: tunnel_fields(),
         };
-        p.fields[T_DIR].choice = usize::from(e.kind == 'R');
+        p.fields[T_DIR].choice = direction(e.kind);
         p.fields[T_HOST].value = e.host.clone();
         p.fields[T_NAME].value = e.name.clone().unwrap_or_default();
+        if e.kind == 'D' {
+            p.fields[T_D_PORT].value = e.spec.clone();
+            return p;
+        }
         let (a, b, c) = if e.kind == 'L' {
             (T_L_OPEN, T_L_HOST, T_L_PORT)
         } else {
@@ -363,12 +372,11 @@ impl Prompt {
             }
             // Which side a name is looked up on is the one thing about a
             // forward that is not guessable, and it stays true once typed.
-            Action::Tunnel { .. } if self.fields[T_DIR].choice == 0 => {
-                "the remote host is resolved over there, so localhost is the host itself"
-            }
-            Action::Tunnel { .. } => {
-                "the local host is resolved here, so localhost is this machine"
-            }
+            Action::Tunnel { .. } => match self.fields[T_DIR].choice {
+                0 => "the remote host is resolved over there, so localhost is the host itself",
+                1 => "the local host is resolved here, so localhost is this machine",
+                _ => "set the browser's proxy to socks5://localhost:<port> with remote DNS on",
+            },
             _ => "",
         }
     }
@@ -449,8 +457,8 @@ impl Prompt {
     }
 }
 
-/// The tunnel wizard's fields, by name. The form holds both directions at
-/// once and hides the half it is not asking about, so the indices stay put and
+/// The tunnel wizard's fields, by name. The form holds every direction at
+/// once and hides the ones it is not asking about, so the indices stay put and
 /// only the visible ones ever mean anything.
 const T_DIR: usize = 0;
 const T_HOST: usize = 1;
@@ -462,11 +470,22 @@ const T_L_PORT: usize = 4;
 const T_R_OPEN: usize = 5;
 const T_R_HOST: usize = 6;
 const T_R_PORT: usize = 7;
+/// `-D`: the port the SOCKS proxy listens on here, which is the whole spec.
+const T_D_PORT: usize = 8;
 /// Last, because it is the only optional thing in the form and the row already
 /// reads without it: a forward is listed by what it does unless you say better.
-const T_NAME: usize = 8;
+const T_NAME: usize = 9;
 
-/// Both directions, written in the order ssh writes the spec so the form reads
+/// The Direction answer for a forward's flag.
+fn direction(kind: char) -> usize {
+    match kind {
+        'R' => 1,
+        'D' => 2,
+        _ => 0,
+    }
+}
+
+/// Every direction, written in the order ssh writes the spec so the form reads
 /// as the command in the preview underneath it rather than as its mirror. The
 /// labels swap sides between them, which is why they are two sets of fields and
 /// not one: `Local port` means the port you dial in a `-L` and the port that is
@@ -476,11 +495,15 @@ fn tunnel_fields() -> Vec<Field> {
     vec![
         Field::choice(
             "Direction",
-            &["reach a remote port (-L)", "expose a local port (-R)"],
+            &[
+                "reach a remote port (-L)",
+                "expose a local port (-R)",
+                "browse through the host (-D)",
+            ],
         ),
         Field::new("Host", "")
             .required()
-            .hint("a host in ~/.ssh/config"),
+            .hint("ctrl-o to pick · or type a host"),
         Field::new("Local port", "= remote")
             .hint("where you'll reach it")
             .shown_when(T_DIR, &[0]),
@@ -507,6 +530,11 @@ fn tunnel_fields() -> Vec<Field> {
             .hint("the service's port")
             .required()
             .shown_when(T_DIR, &[1]),
+        // A SOCKS proxy has no target: the client names one per connection,
+        // which is the point of it.
+        Field::new("Local port", "1080")
+            .hint("the SOCKS proxy's port")
+            .shown_when(T_DIR, &[2]),
         // The row is spelled out from the ports when this is blank, so a name
         // is only ever for saying what the ports cannot: what it is *for*.
         Field::new("Name", "").hint("a label, e.g. pihole"),
@@ -519,16 +547,23 @@ fn tunnel_fields() -> Vec<Field> {
 pub(super) fn tunnel_spec(fields: &[Field]) -> (char, String, String) {
     let v = |i: usize| fields[i].value.trim();
     let host = v(T_HOST).to_string();
-    if fields[T_DIR].choice == 0 {
-        let target = non_blank(v(T_L_HOST), "localhost");
-        let remote = v(T_L_PORT);
-        let local = non_blank(v(T_L_OPEN), remote);
-        ('L', format!("{local}:{target}:{remote}"), host)
-    } else {
-        let target = non_blank(v(T_R_HOST), "localhost");
-        let local = v(T_R_PORT);
-        let remote = non_blank(v(T_R_OPEN), local);
-        ('R', format!("{remote}:{target}:{local}"), host)
+    match fields[T_DIR].choice {
+        0 => {
+            let target = non_blank(v(T_L_HOST), "localhost");
+            let remote = v(T_L_PORT);
+            let local = non_blank(v(T_L_OPEN), remote);
+            ('L', format!("{local}:{target}:{remote}"), host)
+        }
+        1 => {
+            let target = non_blank(v(T_R_HOST), "localhost");
+            let local = v(T_R_PORT);
+            let remote = non_blank(v(T_R_OPEN), local);
+            ('R', format!("{remote}:{target}:{local}"), host)
+        }
+        _ => {
+            let port = non_blank(v(T_D_PORT), &fields[T_D_PORT].default);
+            ('D', port.to_string(), host)
+        }
     }
 }
 
@@ -546,6 +581,10 @@ pub(super) fn tunnel_problem(fields: &[Field]) -> Option<String> {
     let forward = fields[T_DIR].choice == 0;
     if v(T_HOST).is_empty() {
         return Some("a host is required - ctrl-o picks one from ~/.ssh/config".into());
+    }
+    // A `-D` needs nothing but the host: a blank port is 1080.
+    if fields[T_DIR].choice == 2 {
+        return None;
     }
     let (port, side) = if forward {
         (v(T_L_PORT), "a remote port")
@@ -755,15 +794,14 @@ pub(super) fn render_prompt(f: &mut Frame, area: Rect, p: &Prompt) {
             Span::styled(cmd, Style::default().fg(Color::Green)),
         ]));
     }
-    let mut hint = "enter next/submit · esc cancel".to_string();
+    let mut keys = FORM_KEYS.to_vec();
     if (0..p.fields.len()).any(|i| p.visible(i) && p.fields[i].required) {
-        hint.push_str(" · * required");
+        keys.push(REQUIRED);
     }
-    let hint = hint;
     lines.push(Line::raw(""));
-    lines.push(box_hint(&hint));
+    lines.push(box_hint(&keys));
     texts.push(String::new());
-    texts.push(hint.clone());
+    texts.push(keys.join(SEP));
 
     // Size to the *wrapped* content: a sudo mount's preview is far wider than
     // the box, and counting lines instead of rows pushed the keys out through

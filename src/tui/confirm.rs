@@ -5,6 +5,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
+use super::widgets::GATE_KEYS;
 use super::*;
 
 /// A titled yes/no modal, in two kinds that must not look alike: a **gate** in
@@ -61,7 +62,7 @@ pub(crate) enum ConfirmAction {
     /// Force `fusermount -u -z` on a mountpoint a normal unmount found busy.
     LazyUnmount {
         local: String,
-        /// Delete its line once it is unmounted, because a `D` is what hit the busy mount.
+        /// Delete its line once it is unmounted, because a `d` is what hit the busy mount.
         forget: bool,
     },
     /// Drop a mount's line from `~/.config/easyssh/mounts`, unmounting it first.
@@ -116,7 +117,7 @@ pub(super) fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
         Line::raw(""),
         box_buttons(accent, c.yes),
         Line::raw(""),
-        box_hint("h/l ←/→ move · enter select · y/n"),
+        box_hint(GATE_KEYS),
     ]);
     let para = Paragraph::new(lines)
         .block(box_block(accent, &c.title))
@@ -125,11 +126,16 @@ pub(super) fn render_confirm(f: &mut Frame, area: Rect, c: &Confirm) {
 }
 
 impl App {
-    /// Resolve a pending yes/no gate. `y` proceeds and `n`/`Esc` cancels outright,
+    /// Resolve a pending yes/no gate. `y` proceeds and `n`, `Esc` or Ctrl-C cancels outright,
     /// or move between the buttons (`h`/`l`, the arrows, Tab) and press Enter.
     /// Any other key is ignored so a stray keypress cannot dismiss the modal.
     pub(super) fn confirm_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         use KeyCode::*;
+        if super::input::is_ctrl_c(key) {
+            self.confirm = None;
+            self.set_status("cancelled");
+            return None;
+        }
         match key.code {
             Left | Right | Char('h') | Char('l') | Tab | BackTab => {
                 if let Some(c) = self.confirm.as_mut() {

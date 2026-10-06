@@ -5,7 +5,7 @@ use picker::PickerAction;
 
 /// Why a login failed, as far as ssh's own words tell.
 #[derive(Debug, PartialEq)]
-pub(super) enum Diagnosis {
+pub(crate) enum Diagnosis {
     /// The host key no longer matches; `target` is what `ssh-keygen -R` takes.
     KeyChanged { target: String },
     /// The agent offered so many keys that the server gave up before the right one.
@@ -24,8 +24,17 @@ pub(super) enum Diagnosis {
 /// connect exited 255, and on a background thread before `Y` installs a key.
 /// Blocks for up to the 6 s connect timeout. Returns the diagnosis and ssh's
 /// own lines, cut to what says what failed.
-pub(super) fn diagnose(host: &str) -> Option<(Diagnosis, String)> {
-    let out = Command::new("ssh")
+pub(crate) fn diagnose(host: &str) -> Option<(Diagnosis, String)> {
+    let out = probe(host)?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    Some((classify(host, &text)?, said(&text)))
+}
+
+/// The login `diagnose` tries: keys and agent only, a 6 s timeout, and no
+/// command a host forces, so the exit status says whether this machine can log
+/// in without anybody typing.
+pub(crate) fn probe(host: &str) -> Option<std::process::Output> {
+    Command::new("ssh")
         .args([
             "-o",
             "BatchMode=yes",
@@ -41,12 +50,10 @@ pub(super) fn diagnose(host: &str) -> Option<(Diagnosis, String)> {
             "true",
         ])
         .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stderr);
-    Some((classify(host, &text)?, said(&text)))
+        .ok()
 }
 
-pub(super) fn classify(host: &str, text: &str) -> Option<Diagnosis> {
+pub(crate) fn classify(host: &str, text: &str) -> Option<Diagnosis> {
     if text.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
         // ssh prints "remove with: ssh-keygen -f '...' -R '<target>'"; that
         // target is the name/IP as stored in known_hosts, not our alias.
@@ -80,7 +87,7 @@ pub(super) fn classify(host: &str, text: &str) -> Option<Diagnosis> {
 /// ssh's stderr without the chatter, at most five lines in their order. The
 /// lines that say what failed are kept first, since a server banner or
 /// OpenSSH's post-quantum notice can come before them and fill the five.
-pub(super) fn said(text: &str) -> String {
+pub(crate) fn said(text: &str) -> String {
     const FAILED: [&str; 9] = [
         "Permission denied",
         "Connection refused",

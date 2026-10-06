@@ -4,6 +4,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 
+use super::widgets::PICKER_KEYS;
 use super::*;
 
 /// A modal list picker: choose an existing value instead of typing it. Anything
@@ -75,10 +76,15 @@ pub(super) fn render_picker(f: &mut Frame, area: Rect, p: &Picker) {
     let mut state = ListState::default();
     state.select(Some(p.idx));
     f.render_stateful_widget(list, list_area, &mut state);
+    super::widgets::vscrollbar(
+        f,
+        rect,
+        p.items.len(),
+        state.offset(),
+        list_area.height as usize,
+    );
     f.render_widget(
-        Paragraph::new(super::widgets::box_hint(
-            "j/k ↑↓ move · enter pick · esc cancel",
-        )),
+        Paragraph::new(super::widgets::box_hint(PICKER_KEYS)),
         hint_area,
     );
 }

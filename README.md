@@ -42,7 +42,13 @@ a key you already have. `Y` on the Keys tab installs it on the new machine with
 A port forward is a background `ssh -N` with no window and nothing to close.
 `t` on a host opens one (`T` the other way, `-R`), and the form shows the line
 it will run as you type. Each row says what it does without your naming it,
-`↵` turns one off and on, `e` rewrites it, `D` deletes it.
+`↵` turns one off and on, `e` rewrites it, `d` deletes it.
+
+For a web UI that one port cannot carry, such as a router that redirects to its
+own address, pick `browse through the host (-D)` under Direction: it runs a
+SOCKS proxy that reaches every address the host can. Point the browser, or the
+system, at `socks5://localhost:<port>` (1080 unless you change it) with remote
+DNS on.
 
 The list is `~/.config/easyssh/tunnels`, one `-L spec host` line each, so it can
 live in your dotfiles.
@@ -54,7 +60,7 @@ live in your dotfiles.
 `m` on a host shows the `sshfs` line it will run, and the mount lands on the
 Mounts tab as an ordinary folder, `~/sshfs/raspi` here. `sshfs` makes a remote directory a local one, and then you forget
 the `fusermount -u` on the way out: `↵` does it and mounts it again later, and
-`D` deletes it. The mountpoint is cleaned up either way.
+`d` deletes it. The mountpoint is cleaned up either way.
 
 The list is `~/.config/easyssh/mounts`, one `local <- host:path` line each.
 
@@ -99,22 +105,34 @@ the remote sftp-server path. `↵` changes one, `d` puts it back, and it saves t
 ## Commands
 
 ```bash
-essh ls [-v]                 # list hosts from ~/.ssh/config (-v adds target, key, jump)
-essh cp <src> <dst>          # scp with alias:path shorthand and auto -r for dirs
-essh completions bash --add  # turn on Tab completion (zsh and fish too)
+essh ls [-v]                       # list hosts from ~/.ssh/config (-v adds target, key, jump)
+essh cp <src> <dst>                # scp with alias:path shorthand and auto -r for dirs
+essh host add box --hostname 198.51.100.7 --user deploy   # add a host (edit, rm)
+essh tunnel add -D 1080 raspi --name router               # keep a forward and start it
+essh tunnel off router             # stop it and keep its line (on, rm, ls)
+essh mount add raspi:~/notes       # keep a mount and mount it (off, on, rm, ls)
+essh key new laptop                # ssh-keygen with safe defaults (ls, install)
+essh check raspi                   # can this machine log in without typing, and why not
+essh -- mount                      # connect to a host whose alias is also a command
+essh completions bash --add        # turn on Tab completion (zsh and fish too)
 ```
 
-`essh --help` and `essh <command> --help` have the rest.
+Everything the tabs do has a command, so a script or an agent can drive it
+without a terminal: every `ls` takes `--json`, and every command that changes
+something takes `-n` to print its steps and change nothing. `essh --help` and
+`essh <command> --help` have the rest.
 
 ## Keys
 
 | key | does |
 | --- | --- |
 | `j` `k` / `↑` `↓` | move in the list |
-| `h` `l` / `←` `→` / `Tab` | switch tab |
-| `/` | filter the list; `Enter` keeps it, `Esc` drops it |
+| `h` `l` / `←` `→` / `tab` `shift-tab` | switch tab |
+| `/` | filter the list; `↵` keeps it, `esc` drops it |
+| `r` | read the tab's data again |
+| `esc` | cancel a form or a question, close help or an alert |
 | `?` | every key, on every tab |
-| `q` / `Ctrl-C` | quit |
+| `q` / `ctrl-c` | quit; in a form or a box, `ctrl-c` is `esc` |
 
 Each tab's own keys are on its bottom line, and `?` lists them all.
 

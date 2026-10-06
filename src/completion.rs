@@ -52,6 +52,15 @@ pub fn hosts() -> Vec<CompletionCandidate> {
         .collect()
 }
 
+/// The aliases that start with what is typed, for an argument that takes one.
+pub fn host_names(current: &OsStr) -> Vec<CompletionCandidate> {
+    let typed = current.to_string_lossy();
+    hosts()
+        .into_iter()
+        .filter(|c| c.get_value().to_string_lossy().starts_with(typed.as_ref()))
+        .collect()
+}
+
 /// A `cp` path: `alias:path` lists the remote side, anything else is a local
 /// path or the start of an alias.
 pub fn cp_path(current: &OsStr) -> Vec<CompletionCandidate> {

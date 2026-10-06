@@ -1,6 +1,6 @@
 //! The toolbox - bare `essh`. Four tabs (Hosts / Keys / Tunnels / Mounts) and a
 //! set of wizards that stand in for the commands nobody remembers: `ssh-keygen`,
-//! `ssh-copy-id`, `ssh -L/-R`, `sshfs`, and hand-editing `~/.ssh/config`.
+//! `ssh-copy-id`, `ssh -L/-R/-D`, `sshfs`, and hand-editing `~/.ssh/config`.
 //!
 //! Anything interactive (connecting, generating a key, copying a key, mounting)
 //! runs *suspended*: we drop out of the alternate screen, hand the real terminal
@@ -37,12 +37,12 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 /// The tabs. Order here is the left-to-right / Tab-cycle order.
 mod alert;
 mod confirm;
-mod connect;
+pub(crate) mod connect;
 mod detail;
 mod filter;
 mod input;
 mod line_edit;
-mod mount_spec;
+pub(crate) mod mount_spec;
 mod paste_run;
 mod picker;
 mod prompt;
@@ -60,8 +60,9 @@ use picker::Picker;
 use prompt::{Action, Field, Kind, Prompt, render_prompt};
 use render::ui;
 use widgets::{
-    box_area, box_block, box_buttons, box_height, box_hint, box_inner_width, box_width, empty,
-    titled, wrapped_line_count,
+    BACK, CREATE, DEFAULT, DEL, EDIT, FIND, QUIT, REFRESH, YANK, box_area, box_block, box_buttons,
+    box_height, box_hint, box_inner_width, box_width, empty, key_footer, titled,
+    wrapped_line_count,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -81,14 +82,26 @@ const VIEWS: [View; 5] = [
     View::Settings,
 ];
 
-// The bottom bar is a terse reminder of this view's actions only; `?` opens the
-// full cheat-sheet (navigation keys and the real command behind each action), so
-// the bar stays short instead of restating everything and overflowing.
-const HOSTS_HINTS: &str = "↵ connect · c new · e edit · d del · m mount · t/T tunnel · P paste · r refresh · / find · ? help";
-const KEYS_HINTS: &str = "c new · y copy pubkey · Y install on host · r refresh · / find · ? help";
-const TUNNELS_HINTS: &str = "↵ on/off · c new · e edit · D delete · r refresh · / find · ? help";
-const MOUNTS_HINTS: &str = "↵ on/off · D delete · r refresh · / find · ? help";
-const SETTINGS_HINTS: &str = "↵ change · d back to default · r reload · ? help";
+// Each view's footer: its actions in the fixed order, `↵` first, then its own
+// keys, then create, edit, delete, then the shared tail. `? help` is pinned by
+// `key_footer`, and motions are only in the help panel.
+const HOSTS_KEYS: &[&str] = &[
+    "↵ connect",
+    "m mount",
+    "t tunnel",
+    "T expose",
+    "P paste",
+    CREATE,
+    EDIT,
+    DEL,
+    FIND,
+    REFRESH,
+    QUIT,
+];
+const KEYS_KEYS: &[&str] = &[YANK, "Y install", CREATE, FIND, REFRESH, QUIT];
+const TUNNELS_KEYS: &[&str] = &["↵ on/off", CREATE, EDIT, DEL, FIND, REFRESH, QUIT];
+const MOUNTS_KEYS: &[&str] = &["↵ on/off", DEL, FIND, REFRESH, QUIT];
+const SETTINGS_KEYS: &[&str] = &["↵ change", DEFAULT, FIND, REFRESH, QUIT];
 
 /// How long a status message stays on screen before the hints return.
 const STATUS_TTL: Duration = Duration::from_secs(3);
@@ -148,6 +161,8 @@ pub(super) struct App {
     /// message never sits there looking like it is still current.
     pub(super) status_at: Option<Instant>,
     pub(super) show_help: bool,
+    /// The first help row on screen; `render_help` clamps it to the end.
+    pub(super) help_scroll: usize,
     pub(super) should_quit: bool,
     /// What `/` is filtering the current list by. Empty means "show all".
     pub(super) query: String,
@@ -200,6 +215,7 @@ impl App {
             status_failed: false,
             status_at: None,
             show_help: false,
+            help_scroll: 0,
             should_quit: false,
             query: String::new(),
             query_back: 0,

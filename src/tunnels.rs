@@ -101,10 +101,14 @@ impl Entry {
     /// What the row is called. A typed name wins; otherwise it is spelled out
     /// from what the forward does, which is the whole of what one is - so
     /// nothing has to be named to be readable. `-L` reads as the service and
-    /// then the port that answers for it here, `-R` the other way round.
+    /// then the port that answers for it here, `-R` the other way round, and
+    /// `-D` as the proxy and the host it reaches out from.
     pub fn label(&self) -> String {
         if let Some(name) = &self.name {
             return name.clone();
+        }
+        if self.kind == 'D' {
+            return format!("SOCKS on {} → {}", self.spec, self.host);
         }
         let Some((open, target, port)) = self.ports() else {
             return format!("-{} {}", self.kind, self.spec);
@@ -144,8 +148,12 @@ impl Entry {
 
     /// The three parts of a `-L`/`-R` spec: the port opened on this side, and
     /// the `host:port` the far side connects onward to. `None` for a spec we
-    /// did not write (a bind address in front makes it four fields).
+    /// did not write (a bind address in front makes it four fields), and for
+    /// every `-D`, which has no target.
     pub fn ports(&self) -> Option<(&str, &str, &str)> {
+        if self.kind == 'D' {
+            return None;
+        }
         let mut f = self.spec.split(':');
         match (f.next(), f.next(), f.next(), f.next()) {
             (Some(open), Some(target), Some(port), None) => Some((open, target, port)),
@@ -155,6 +163,19 @@ impl Entry {
 
     /// What this forward does, in the words of what you would use it for.
     pub fn explain(&self) -> String {
+        if self.kind == 'D' {
+            // A bare port listens on loopback only, which is what a browser
+            // on this machine is pointed at.
+            let at = if self.spec.contains(':') {
+                self.spec.clone()
+            } else {
+                format!("localhost:{}", self.spec)
+            };
+            return format!(
+                "socks5://{at} here reaches whatever {} can, names resolved there",
+                self.host
+            );
+        }
         let Some((open, target, port)) = self.ports() else {
             return format!("-{} {}", self.kind, self.spec);
         };
@@ -348,6 +369,7 @@ fn parse_saved(line: &str) -> Option<Saved> {
     let kind = match f.next()? {
         "-L" | "L" => 'L',
         "-R" | "R" => 'R',
+        "-D" | "D" => 'D',
         _ => return None,
     };
     Some(Saved {
@@ -379,8 +401,9 @@ fn saved_from(text: &str) -> Vec<Saved> {
 const SAVED_HEADER: &str = "\
 # easyssh tunnels - the forwards you keep, one `-L spec host` line each, and
 # ` = a label` after it where you named one. -L reaches a remote service from
-# here, -R exposes a local one over there. The Tunnels tab writes this file;
-# `enter` turns a line on and off.
+# here, -R exposes a local one over there, and -D `port host` is a SOCKS proxy
+# that reaches whatever the host can. The Tunnels tab writes this file; `enter`
+# turns a line on and off.
 
 ";
 
@@ -448,7 +471,7 @@ fn write_saved(path: &std::path::Path, body: &str) -> Result<()> {
     fs::write(path, body).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Open a forward: spawn `ssh -N -{L|R} <spec> <host>` fully detached (its own
+/// Open a forward: spawn `ssh -N -{L|R|D} <spec> <host>` fully detached (its own
 /// process group, stderr to a log file) so it outlives us, wait ~1s to confirm
 /// it connected, then record it. If ssh bailed (bad port, auth, DNS) the captured
 /// stderr becomes the returned error instead of a phantom tunnel.

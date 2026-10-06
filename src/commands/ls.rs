@@ -10,15 +10,39 @@ pub struct Args {
     /// Also show where each alias connects (user@hostname:port)
     #[arg(short, long)]
     pub verbose: bool,
+    #[command(flatten)]
+    pub json: super::Json,
 }
 
 pub fn run(args: Args) {
     let hosts = sshcfg::list_hosts();
 
+    if args.json.json {
+        use super::{json_array, json_opt, json_str};
+        let rows: Vec<String> = hosts
+            .iter()
+            .map(|h| {
+                format!(
+                    "{{\"alias\": {}, \"hostname\": {}, \"user\": {}, \"port\": {}, \"key\": {}, \"jump\": {}, \"command\": {}, \"forward_agent\": {}}}",
+                    json_str(&h.alias),
+                    json_opt(h.hostname.as_deref()),
+                    json_opt(h.user.as_deref()),
+                    json_opt(h.port.as_deref()),
+                    json_opt(h.identity.as_deref()),
+                    json_opt(h.proxy_jump.as_deref()),
+                    json_opt(h.remote_command.as_deref()),
+                    json_opt(h.forward_agent.as_deref()),
+                )
+            })
+            .collect();
+        println!("{}", json_array(&rows));
+        return;
+    }
+
     if hosts.is_empty() {
-        println!(
+        eprintln!(
             "{}",
-            "No hosts in ~/.ssh/config yet. Run `essh` and press `c` to add one.".dimmed()
+            "No hosts in ~/.ssh/config yet: `essh host add <ALIAS>` adds one.".dimmed()
         );
         return;
     }

@@ -6,14 +6,33 @@ use super::confirm::ConfirmAction;
 use super::picker::PickerAction;
 use super::*;
 
+/// Ctrl-C, which does what Esc does under a box or in a form and quits from a view.
+pub(super) fn is_ctrl_c(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c')
+}
+
 impl App {
     pub(super) fn on_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         if self.show_help {
-            if matches!(
-                key.code,
-                KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')
-            ) {
-                self.show_help = false;
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let half = 10;
+            match key.code {
+                _ if is_ctrl_c(key) => self.show_help = false,
+                KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => self.show_help = false,
+                KeyCode::Char('d') if ctrl => self.help_scroll += half,
+                KeyCode::Char('u') if ctrl => {
+                    self.help_scroll = self.help_scroll.saturating_sub(half)
+                }
+                KeyCode::PageDown => self.help_scroll += half,
+                KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(half),
+                KeyCode::Char('j') | KeyCode::Down => self.help_scroll += 1,
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1)
+                }
+                KeyCode::Char('g') | KeyCode::Home => self.help_scroll = 0,
+                // `render_help` clamps this to the last screenful.
+                KeyCode::Char('G') | KeyCode::End => self.help_scroll = usize::MAX,
+                _ => {}
             }
             return None;
         }
@@ -42,20 +61,17 @@ impl App {
     /// has to run before the per-view letters; the list keeps updating under it
     /// and the arrows still move, which is what makes "type then Enter" work.
     pub(super) fn search_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if ctrl && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
+        // Esc drops the filter entirely, and Ctrl-C with it, so a reflex Ctrl-C
+        // steps out of the query before it can quit; Enter keeps it and hands
+        // the keys back to the list, so you can search then act on what you found.
+        if key.code == KeyCode::Esc || is_ctrl_c(key) {
+            self.query.clear();
+            self.query_back = 0;
+            self.searching = false;
+            self.requery();
             return None;
         }
         match key.code {
-            // Esc drops the filter entirely; Enter keeps it and hands the keys
-            // back to the list, so you can search then act on what you found.
-            KeyCode::Esc => {
-                self.query.clear();
-                self.query_back = 0;
-                self.searching = false;
-                self.requery();
-            }
             KeyCode::Enter => self.searching = false,
             KeyCode::Down => self.move_sel(1),
             KeyCode::Up => self.move_sel(-1),
@@ -71,8 +87,8 @@ impl App {
     pub(super) fn nav_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-        // Ctrl-C always quits, even while a per-view letter (like `c` copy) is bound.
-        if ctrl && key.code == KeyCode::Char('c') {
+        // On a view Ctrl-C quits, even though `c` alone is create.
+        if is_ctrl_c(key) {
             self.should_quit = true;
             return None;
         }
@@ -87,6 +103,7 @@ impl App {
             }
             KeyCode::Char('?') if !ctrl => {
                 self.show_help = true;
+                self.help_scroll = 0;
                 return None;
             }
             // `/` is the filter, the same key it is in vim, less and man.
@@ -374,7 +391,7 @@ impl App {
 
     /// The Tunnels tab. Every row is a forward you keep, so the keys are the
     /// same for all of them: Enter is the off switch a background `ssh -N` never
-    /// had, and `D` deletes the line behind a gate.
+    /// had, and `d` deletes the line behind a gate.
     pub(super) fn tunnels_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         match key.code {
             KeyCode::Enter => {
@@ -389,8 +406,10 @@ impl App {
             }
             KeyCode::Char('e') => {
                 // A spec with a bind address in front is four fields, which the
-                // form has three of: say so rather than rewriting it wrong.
-                if self.selected_tunnel()?.ports().is_none() {
+                // form has three of: say so rather than rewriting it wrong. A
+                // `-D` spec is one field, which the form takes as typed.
+                let t = self.selected_tunnel()?;
+                if t.kind != 'D' && t.ports().is_none() {
                     self.set_status("this spec has a bind address - edit the file by hand");
                     return None;
                 }
@@ -398,9 +417,9 @@ impl App {
                 self.prompt = Some(prompt);
                 None
             }
-            // Deleting loses the line, so it is its own key and always asks first;
-            // a running forward is stopped on the way out.
-            KeyCode::Char('D') => {
+            // Deleting loses the line, so it always asks first; a running
+            // forward is stopped on the way out.
+            KeyCode::Char('d') => {
                 let (label, kind, spec, host, pid) = {
                     let t = self.selected_tunnel()?;
                     (t.label(), t.kind, t.spec.clone(), t.host.clone(), t.pid())
@@ -462,7 +481,7 @@ impl App {
     }
 
     /// The Mounts tab, keyed the way Tunnels is: Enter mounts or unmounts, and
-    /// `D` deletes the line.
+    /// `d` deletes the line.
     pub(super) fn mounts_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         match key.code {
             KeyCode::Enter => {
@@ -478,7 +497,7 @@ impl App {
                 }
                 self.start_mount(spec, false)
             }
-            KeyCode::Char('D') => {
+            KeyCode::Char('d') => {
                 let m = self.selected_mount()?;
                 let mounted = if m.on {
                     " It is mounted, so it is unmounted first."

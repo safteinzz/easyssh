@@ -12,8 +12,8 @@
 #   ./stage.sh down   unmount anything under the stage, then delete it
 #
 # The shell it opens wears the same invented `user@host` prompt as every other
-# crate's rig, and no tape sets a VHS theme, so every frame across the projects
-# is the same terminal.
+# crate's rig, and every tape sets the same VHS theme and font, so every frame
+# across the projects is the same terminal.
 #
 # Every address is from a range reserved for documentation (RFC 5737, RFC 3849)
 # or loopback, every name is example.com (RFC 2606), and every key is generated
@@ -359,7 +359,8 @@ down_quiet() {
 # images are a build output, and a build output that depends on whose machine
 # ran it is not reproducible. A username is not a leak, but `user@host` is the
 # same for everyone, and it is the same string in all six rigs so the frames
-# match. No tape sets a theme either, so every frame is VHS's default black.
+# match. Every tape also sets the same theme and font (Catppuccin Mocha,
+# JetBrainsMono NF).
 write_demorc() {
   cat > "$STAGE/.demorc" <<'EOF'
 PS1='\[\e[38;5;114m\]user@host\[\e[0m\]:\[\e[38;5;110m\]\w\[\e[0m\]\$ '
