@@ -688,6 +688,44 @@ mod tests {
     }
 
     #[test]
+    fn a_socks_forward_survives_the_saved_file() {
+        // A `-D` spec is one field with no target, and the line is still keyed
+        // by flag, spec and host, so it reads back as itself, label included.
+        let def = Saved {
+            kind: 'D',
+            spec: "1080".into(),
+            host: "raspi".into(),
+            name: Some("router".into()),
+        };
+        let file = with_saved("", &def);
+        let back = saved_from(&file);
+        assert_eq!(back.len(), 1, "one -D line in, one forward out");
+        assert!(
+            back[0].matches('D', "1080", "raspi"),
+            "-D 1080 raspi has to read back as itself"
+        );
+        assert_eq!(back[0].name.as_deref(), Some("router"));
+
+        // A bind address in front is the other shape ssh takes for `-D`.
+        let bound = Saved {
+            spec: "127.0.0.1:1080".into(),
+            name: None,
+            ..def.clone()
+        };
+        assert!(
+            saved_from(&saved_line(&bound))
+                .first()
+                .is_some_and(|s| s.matches('D', "127.0.0.1:1080", "raspi")),
+            "-D with a bind address has to read back as itself"
+        );
+
+        assert!(
+            saved_from(&without_saved(&file, 'D', "1080", "raspi")).is_empty(),
+            "forgetting a -D forward takes its line"
+        );
+    }
+
+    #[test]
     fn the_command_is_the_one_that_ran() {
         assert_eq!(
             entry('L', "8080:localhost:80").command(),
