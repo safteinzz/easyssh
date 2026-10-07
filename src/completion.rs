@@ -1,7 +1,8 @@
 //! Tab completion, served by the binary itself through clap_complete's env
 //! mode: `essh completions bash` (or `COMPLETE=bash essh`) prints the script
 //! that registers it, and every Tab then runs `essh` with `COMPLETE` set. The first word completes to config aliases and
-//! a `cp` path completes locally, to `alias:`, or on the far side over ssh.
+//! a `cp` path completes locally, to `alias:`, or on the far side over ssh, as
+//! does the `alias:path` of `ls` minus the local side.
 
 use crate::commands::cp::remote_alias;
 use crate::sshcfg;
@@ -64,6 +65,16 @@ pub fn host_names(current: &OsStr) -> Vec<CompletionCandidate> {
 /// A `cp` path: `alias:path` lists the remote side, anything else is a local
 /// path or the start of an alias.
 pub fn cp_path(current: &OsStr) -> Vec<CompletionCandidate> {
+    if current.to_str().is_none_or(|c| remote_alias(c).is_some()) {
+        return remote_path(current);
+    }
+    let mut out = PathCompleter::any().complete(current);
+    out.extend(remote_path(current));
+    out
+}
+
+/// An `alias:path`: the remote side once the colon is typed, `alias:` before.
+pub fn remote_path(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(current) = current.to_str() else {
         return Vec::new();
     };
@@ -74,17 +85,14 @@ pub fn cp_path(current: &OsStr) -> Vec<CompletionCandidate> {
             .map(|p| CompletionCandidate::new(format!("{alias}:{p}")))
             .collect();
     }
-    let mut out = PathCompleter::any().complete(OsStr::new(current));
-    out.extend(
-        hosts()
-            .into_iter()
-            .filter(|c| c.get_value().to_string_lossy().starts_with(current))
-            .map(|c| {
-                let value = format!("{}:", c.get_value().to_string_lossy());
-                CompletionCandidate::new(value).help(c.get_help().cloned())
-            }),
-    );
-    out
+    hosts()
+        .into_iter()
+        .filter(|c| c.get_value().to_string_lossy().starts_with(current))
+        .map(|c| {
+            let value = format!("{}:", c.get_value().to_string_lossy());
+            CompletionCandidate::new(value).help(c.get_help().cloned())
+        })
+        .collect()
 }
 
 /// What `path*` matches on `alias`, spelled the way it was typed (`~/Do` gives
@@ -122,7 +130,7 @@ fn remote_paths(alias: &str, path: &str) -> Vec<String> {
 
 /// `dir` quoted for the remote shell, a leading `~` or `~user` left bare so
 /// that shell expands it. `None` for an empty dir or an unsafe `~user`.
-fn remote_dir(dir: &str) -> Option<String> {
+pub(crate) fn remote_dir(dir: &str) -> Option<String> {
     if dir.is_empty() {
         return None;
     }

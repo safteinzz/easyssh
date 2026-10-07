@@ -1,9 +1,13 @@
 //! `essh ls` - every host in your config, one per line. This is your old
 //! `grep '^Host ' ~/.ssh/config | grep -v '*' | awk '{print $2}'` alias, built
-//! in, so you never have to remember the names again.
+//! in, so you never have to remember the names again. Given `host:path` it
+//! lists that folder on the host instead.
 
+use super::cp::remote_alias;
+use crate::completion::remote_dir;
 use crate::sshcfg;
 use colored::Colorize;
+use std::process::Command;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -12,9 +16,16 @@ pub struct Args {
     pub verbose: bool,
     #[command(flatten)]
     pub json: super::Json,
+    /// A folder to list on a host instead, as `host:path`; `host:` lists its home
+    #[arg(value_name = "HOST:PATH", conflicts_with_all = ["verbose", "json"],
+          add = clap_complete::ArgValueCompleter::new(crate::completion::remote_path))]
+    pub remote: Option<String>,
 }
 
 pub fn run(args: Args) {
+    if let Some(remote) = &args.remote {
+        list_remote(remote);
+    }
     let hosts = sshcfg::list_hosts();
 
     if args.json.json {
@@ -81,5 +92,36 @@ pub fn run(args: Args) {
         for h in &hosts {
             println!("{}", h.alias);
         }
+    }
+}
+
+/// `ls` on the far side, its output as ours and its exit code as ours.
+fn list_remote(remote: &str) -> ! {
+    let Some(alias) = remote_alias(remote).filter(|a| !a.starts_with('-')) else {
+        super::fail(&format!(
+            "`{remote}` is not a folder on a host: write it as `<host>:<path>`"
+        ));
+    };
+    let path = &remote[alias.len() + 1..];
+    let target = if path.is_empty() {
+        Some(String::new())
+    } else {
+        remote_dir(path)
+    };
+    let Some(target) = target else {
+        super::fail(&format!(
+            "`{path}` is not a path essh can quote: name the folder without `~user`"
+        ));
+    };
+    let status = Command::new("ssh")
+        .args(["-o", "RemoteCommand=none", "-o", "RequestTTY=no"])
+        .args([&alias, "--", &format!("command ls -- {target}")])
+        .status();
+    match status {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            super::fail("`ssh` is not installed: install OpenSSH's client")
+        }
+        Err(e) => super::fail(&format!("could not run `ssh`: {}", e.kind())),
     }
 }

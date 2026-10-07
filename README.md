@@ -62,6 +62,7 @@ Where mounts land, host order, what runs a login and more. `↵` changes one and
 
 ```bash
 essh ls [-v]                       # list hosts from ~/.ssh/config (-v adds target, key, jump)
+essh ls raspi:~/notes              # list a folder on a host
 essh cp <src> <dst>                # scp with alias:path shorthand and auto -r for dirs
 essh host add box --hostname 198.51.100.7 --user deploy   # add a host (edit, rm)
 essh tunnel add -D 1080 raspi --name router               # keep a forward and start it
@@ -78,7 +79,7 @@ Everything the tabs do has a command, and nothing asks but ssh's own tools, so a
 
 ## Tab completion
 
-Tab completes your config's aliases after `essh`, and local paths, `alias:` and the remote side's own folders after `essh cp`. Turn it on once:
+Tab completes your config's aliases after `essh`, local paths, `alias:` and the remote side's own folders after `essh cp`, and the same minus the local paths after `essh ls`. Turn it on once:
 
 ```bash
 essh completions bash --add    # writes the loader into ~/.bashrc

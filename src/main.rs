@@ -102,7 +102,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// List every host in ~/.ssh/config (your `ssh?` alias, built in)
+    /// List every host in ~/.ssh/config, or a folder on one  [HOST:PATH]
     ///   -v      also show where each alias connects
     ///   --json  every host and its settings, for a script
     #[command(verbatim_doc_comment)]
