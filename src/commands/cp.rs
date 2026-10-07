@@ -1,7 +1,7 @@
 //! `essh cp <src…> <dst>` - copy files without the scp ceremony. Instead of
 //! `scp -r ./thing user@host:/path` you write `essh cp ./thing raspi:Documents`:
 //! the config alias is enough, and we add `-r` automatically when a source is a
-//! directory (the flag everyone forgets until it errors).
+//! local directory or remote (the flag everyone forgets until it errors).
 
 use crate::sshcfg;
 use colored::Colorize;
@@ -35,10 +35,11 @@ pub fn run(args: Args) {
         }
     }
 
-    // Auto-recursive if any *local* source is a directory.
+    // A remote source cannot be checked from here, and `scp -r` copies a lone file
+    // exactly as plain `scp` does.
     let recursive = srcs
         .iter()
-        .any(|s| remote_alias(s).is_none() && Path::new(s).is_dir());
+        .any(|s| remote_alias(s).is_some() || Path::new(s).is_dir());
 
     let mut cmd = std::process::Command::new("scp");
     if recursive {
