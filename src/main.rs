@@ -107,7 +107,7 @@ enum Cmd {
     ///   --json  every host and its settings, for a script
     #[command(verbatim_doc_comment)]
     Ls(commands::ls::Args),
-    /// Copy files over scp: alias:path shorthand, auto -r for directories  <PATH> <PATH>...
+    /// Copy files: alias:path shorthand, folders without -r, rsync into a folder when both sides have it  <PATH> <PATH>...
     ///   essh cp notes.md raspi:~      one or more sources, then the destination
     #[command(verbatim_doc_comment)]
     Cp(commands::cp::Args),

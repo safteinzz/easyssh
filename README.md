@@ -63,7 +63,7 @@ Where mounts land, host order, what runs a login and more. `↵` changes one and
 ```bash
 essh ls [-v]                       # list hosts from ~/.ssh/config (-v adds target, key, jump)
 essh ls raspi:~/notes              # list a folder on a host
-essh cp <src> <dst>                # scp with alias:path shorthand and auto -r for dirs
+essh cp <src> <dst>                # copy with alias:path shorthand, folders without -r
 essh host add box --hostname 198.51.100.7 --user deploy   # add a host (edit, rm)
 essh tunnel add -D 1080 raspi --name router               # keep a forward and start it
 essh tunnel off router             # stop it and keep its line (on, rm, ls)
@@ -108,6 +108,7 @@ Everything under `~/.config/easyssh` can live in your dotfiles.
 
 - It never stores your keys or passwords: the real `ssh` tools and your agent do the work.
 - Yanking needs `wl-copy`, `xclip`, `xsel` or `pbcopy` on PATH; it names the one it used and installs nothing.
+- `essh cp` copies with rsync, one progress line for the whole copy, when it is on both machines and the destination is a folder, and with scp otherwise.
 - Pasting images needs `wl-paste`, `xclip` or `pngpaste` here, and on the host Linux, `~/.local/bin` ahead of `/usr/bin` in its `PATH`, and `python3`, `perl`, `socat` or an `nc` with `-U`.
 
 ## Compatibility

@@ -1,5 +1,6 @@
 //! `essh cp` adds `-r` for a folder it cannot see, run against a stand-in
-//! `scp` that records its arguments, so nothing leaves the machine.
+//! `scp` that records its arguments and no rsync on `PATH`, so nothing leaves
+//! the machine.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -37,11 +38,6 @@ fn copying_from_a_host_hands_scp_the_recursive_flag() {
     )
     .unwrap();
     let recorded = home.0.join("scp-args");
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
 
     let out = Command::new(env!("CARGO_BIN_EXE_essh"))
         .args(["cp", "box:~/project", home.0.to_str().unwrap()])
@@ -49,7 +45,7 @@ fn copying_from_a_host_hands_scp_the_recursive_flag() {
         .env("HOME", &home.0)
         .env("XDG_CONFIG_HOME", home.0.join(".config"))
         .env("XDG_STATE_HOME", home.0.join(".local/state"))
-        .env("PATH", path)
+        .env("PATH", &bin)
         .env("SCP_ARGS", &recorded)
         .output()
         .expect("essh runs");
