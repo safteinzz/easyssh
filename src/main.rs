@@ -51,6 +51,11 @@ What it prints:
   on, off   a kept tunnel or mount is running or not (`state` in --json)
   check     ok · password · keys-only · key-changed · too-many-keys · refused
             · unresolved · unreachable · failed
+  key ls    `agent: not running`, `agent: empty`, `agent: N keys` or `agent:
+            unreadable (why)` first; a key marked agent is loaded, agent only
+            has no file (`path` and `passphrase` null in --json), passphrase
+            asks to unlock; `agent` is null in --json when the agent could not
+            be asked
 
 A connect hands the terminal to ssh, so stdout, stderr and the exit code are
 ssh's own. Everything else prints its result on stdout and its errors on stderr,

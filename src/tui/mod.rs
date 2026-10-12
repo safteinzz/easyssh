@@ -142,6 +142,8 @@ pub(super) struct App {
     pub(super) view: View,
     pub(super) hosts: Vec<Host>,
     pub(super) keys: Vec<keys::Key>,
+    /// What the agent answered when `keys` was read.
+    pub(super) agent: keys::Agent,
     pub(super) tunnels: Vec<tunnels::Entry>,
     pub(super) mounts: Vec<mounts::Mount>,
     pub(super) host_state: ListState,
@@ -201,6 +203,7 @@ impl App {
             view: View::Hosts,
             hosts: Vec::new(),
             keys: Vec::new(),
+            agent: keys::Agent::Holds(Vec::new()),
             tunnels: Vec::new(),
             mounts: Vec::new(),
             host_state: ListState::default(),
@@ -335,7 +338,8 @@ impl App {
     }
 
     pub(super) fn refresh_keys(&mut self) {
-        self.keys = keys::list();
+        self.agent = keys::agent();
+        self.keys = keys::list_with(&self.agent);
         // Which hosts pin each key: only we know both halves.
         keys::link_hosts(&mut self.keys, &self.hosts);
         let n = self.key_rows().len();

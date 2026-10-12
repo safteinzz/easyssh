@@ -153,7 +153,23 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
             }
             let nw = rows
                 .iter()
-                .map(|&i| app.keys[i].name().len())
+                .map(|&i| app.keys[i].name().chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(crate::keys::NAME_COLUMN_MAX);
+            let kw = rows
+                .iter()
+                .map(|&i| app.keys[i].kind.len())
+                .max()
+                .unwrap_or(0);
+            let mark = |k: &crate::keys::Key| match (&k.path, k.agent_loaded) {
+                (None, _) => "agent only",
+                (_, Some(true)) => "agent",
+                _ => "",
+            };
+            let mw = rows
+                .iter()
+                .map(|&i| mark(&app.keys[i]).len() + 1)
                 .max()
                 .unwrap_or(0);
             let items: Vec<ListItem> = rows
@@ -164,16 +180,13 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                         Span::styled(format!("{:nw$}", k.name()), bold),
                         Span::raw("  "),
                         Span::styled(k.kind.clone(), Style::default().fg(Color::Cyan)),
-                        pad(&k.kind, 7),
+                        pad(&k.kind, kw),
                         Span::styled(format!("{:>5}", k.bits), dim),
                         Span::raw("  "),
                         // The two states worth scanning for: a key in the agent
                         // connects silently, an encrypted one will ask.
-                        Span::styled(
-                            if k.agent_loaded { "agent" } else { "" },
-                            Style::default().fg(Color::Green),
-                        ),
-                        pad(if k.agent_loaded { "agent" } else { "" }, 6),
+                        Span::styled(mark(k), Style::default().fg(Color::Green)),
+                        pad(mark(k), mw),
                         Span::styled(
                             if k.encrypted { "passphrase" } else { "" },
                             Style::default().fg(Color::Yellow),
@@ -502,7 +515,7 @@ const HELP: &[HelpSection] = &[
             ("Y", "install it on a host (ssh-copy-id)"),
             (
                 "",
-                "agent: loaded in ssh-agent · passphrase: asks to unlock",
+                "agent: loaded in ssh-agent · agent only: no file · passphrase: asks to unlock",
             ),
         ],
     ),

@@ -327,7 +327,15 @@ impl App {
             // from the config list; never make the user retype an alias the app
             // already knows.
             KeyCode::Char('Y') => {
-                let path = self.selected_key()?.path.clone();
+                let k = self.selected_key()?;
+                let Some(path) = k.path.clone() else {
+                    let msg = format!(
+                        "`{}` is only in the agent, with no .pub to install: `y` copies its public key",
+                        k.name()
+                    );
+                    self.set_failed(msg);
+                    return None;
+                };
                 if self.hosts.is_empty() {
                     self.set_failed("no hosts in ~/.ssh/config to copy to");
                     return None;
@@ -355,7 +363,25 @@ impl App {
             // `y` is the clipboard one, as everywhere else: the public key text
             // itself, for the web form or the ticket asking for it.
             KeyCode::Char('y') => {
-                let path = self.selected_key()?.path.clone();
+                let k = self.selected_key()?;
+                let Some(path) = k.path.clone() else {
+                    let name = k.name();
+                    let (ok, msg) = match keys::agent_public(&k.fingerprint, &k.kind) {
+                        Some(text) => match crate::clip::copy(&text) {
+                            Ok(tool) => (
+                                true,
+                                format!("copied `{name}`'s public key to the clipboard ({tool})"),
+                            ),
+                            Err(e) => (false, format!("clipboard: {e}")),
+                        },
+                        None => (
+                            false,
+                            format!("the agent no longer holds `{name}`: `r` refreshes"),
+                        ),
+                    };
+                    self.set_result(ok, msg);
+                    return None;
+                };
                 let pubpath = keys::pub_path(&path);
                 let (ok, msg) = match fs::read_to_string(&pubpath) {
                     Ok(text) => match crate::clip::copy(text.trim()) {

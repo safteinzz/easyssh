@@ -228,12 +228,12 @@ fn confirm_ignores_stray_keys() {
 fn install_on_host_picks_one_instead_of_typing_it() {
     let mut app = app_with_host();
     app.keys = vec![keys::Key {
-        path: "/home/u/.ssh/id_ed25519".into(),
+        path: Some("/home/u/.ssh/id_ed25519".into()),
         kind: "ED25519".into(),
         bits: "256".into(),
         comment: String::new(),
         fingerprint: String::new(),
-        agent_loaded: false,
+        agent_loaded: Some(false),
         encrypted: false,
         used_by: Vec::new(),
     }];

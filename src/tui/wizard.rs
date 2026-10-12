@@ -24,7 +24,8 @@ impl App {
             if label.contains("IdentityFile") {
                 let items: Vec<String> = keys::list()
                     .iter()
-                    .map(|k| format!("~/.ssh/{}", k.name()))
+                    .filter_map(|k| k.path.as_ref())
+                    .map(|p| crate::sshcfg::collapse_tilde(&p.to_string_lossy()))
                     .collect();
                 if items.is_empty() {
                     self.set_failed("no keys in ~/.ssh to pick");

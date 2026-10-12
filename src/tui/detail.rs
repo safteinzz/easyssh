@@ -147,7 +147,16 @@ fn key_lines(app: &App) -> Vec<Line<'static>> {
     if !k.comment.is_empty() {
         lines.push(row("Comment", k.comment.clone()));
     }
-    lines.push(row("Path", tilde(&k.path)));
+    let Some(path) = &k.path else {
+        lines.push(row("Path", "none: only the agent holds it".into()));
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            label("Agent"),
+            Span::styled("loaded (ssh-add -l)", Style::default().fg(Color::Green)),
+        ]));
+        return lines;
+    };
+    lines.push(row("Path", tilde(path)));
     lines.push(Line::raw(""));
 
     // The two facts that decide whether a connect with this key is silent or
@@ -155,8 +164,15 @@ fn key_lines(app: &App) -> Vec<Line<'static>> {
     lines.push(Line::from(vec![
         label("Agent"),
         match k.agent_loaded {
-            true => Span::styled("loaded (ssh-add -l)", Style::default().fg(Color::Green)),
-            false => Span::styled("not loaded (ssh-add <key>)", dim()),
+            Some(true) => Span::styled("loaded (ssh-add -l)", Style::default().fg(Color::Green)),
+            Some(false) => Span::styled("not loaded (ssh-add <key>)", dim()),
+            None => Span::styled(
+                match &app.agent {
+                    keys::Agent::Unreadable(said) => format!("unreadable: {said}"),
+                    _ => "no agent running (ssh-agent)".into(),
+                },
+                Style::default().fg(Color::Yellow),
+            ),
         },
     ]));
     lines.push(Line::from(vec![

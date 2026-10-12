@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 #[derive(clap::Subcommand)]
 pub enum Cmd {
-    /// Every keypair in ~/.ssh, and which hosts use it
+    /// Every keypair in ~/.ssh and the agent, and which hosts use it
     Ls(Json),
     /// Make a keypair in ~/.ssh with ssh-keygen
     New(NewArgs),
@@ -63,7 +63,8 @@ pub fn run(cmd: Cmd) {
 }
 
 fn list(json: bool) {
-    let mut all = keys::list();
+    let agent = keys::agent();
+    let mut all = keys::list_with(&agent);
     keys::link_hosts(&mut all, &sshcfg::list_hosts());
     if json {
         let rows: Vec<String> = all
@@ -73,13 +74,18 @@ fn list(json: bool) {
                 format!(
                     "{{\"name\": {}, \"path\": {}, \"type\": {}, \"bits\": {}, \"fingerprint\": {}, \"comment\": {}, \"agent\": {}, \"passphrase\": {}, \"used_by\": [{}]}}",
                     json_str(&k.name()),
-                    json_str(&k.path.to_string_lossy()),
+                    k.path
+                        .as_ref()
+                        .map_or("null".into(), |p| json_str(&p.to_string_lossy())),
                     json_str(&k.kind),
                     json_str(&k.bits),
                     json_str(&k.fingerprint),
                     json_str(&k.comment),
-                    k.agent_loaded,
-                    k.encrypted,
+                    k.agent_loaded.map_or("null".into(), |b| b.to_string()),
+                    match k.path {
+                        Some(_) => k.encrypted.to_string(),
+                        None => "null".into(),
+                    },
                     used.join(", "),
                 )
             })
@@ -87,10 +93,25 @@ fn list(json: bool) {
         println!("{}", json_array(&rows));
         return;
     }
-    let name_w = all.iter().map(|k| k.name().len()).max().unwrap_or(0);
+    match &agent {
+        keys::Agent::NotRunning => println!("agent: not running"),
+        keys::Agent::Unreadable(said) => println!("agent: unreadable ({said})"),
+        keys::Agent::Holds(held) if held.is_empty() => println!("agent: empty"),
+        keys::Agent::Holds(held) if held.len() == 1 => println!("agent: 1 key"),
+        keys::Agent::Holds(held) => println!("agent: {} keys", held.len()),
+    }
+    let name_w = all
+        .iter()
+        .map(|k| k.name().chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(keys::NAME_COLUMN_MAX);
+    let kind_w = all.iter().map(|k| k.kind.len()).max().unwrap_or(0);
     for k in &all {
         let mut marks = Vec::new();
-        if k.agent_loaded {
+        if k.path.is_none() {
+            marks.push("agent only");
+        } else if k.agent_loaded == Some(true) {
             marks.push("agent");
         }
         if k.encrypted {
@@ -102,7 +123,7 @@ fn list(json: bool) {
             format!("  used by {}", k.used_by.join(", "))
         };
         println!(
-            "{:name_w$}  {:7}  {}{used}",
+            "{:name_w$}  {:kind_w$}  {}{used}",
             k.name(),
             k.kind,
             marks.join(" ")
@@ -170,6 +191,16 @@ fn key_paths(key: &str) -> (PathBuf, PathBuf) {
     };
     let public = keys::pub_path(&private);
     if !public.exists() {
+        let agent = keys::agent();
+        let held = agent.keys().unwrap_or_default();
+        if held
+            .iter()
+            .any(|k| k.comment == key || k.fingerprint == key)
+        {
+            fail(&format!(
+                "`{key}` is only in the agent, with no .pub file to install: `ssh-add -L` prints its public key"
+            ));
+        }
         fail(&format!(
             "no public key at {}: `essh key ls` lists the keys in ~/.ssh",
             collapse_tilde(&public.to_string_lossy())

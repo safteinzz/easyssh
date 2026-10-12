@@ -9,13 +9,16 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-/// One keypair on disk, with the human-facing details pulled from its `.pub`.
+/// One keypair on disk, with the human-facing details pulled from its `.pub`,
+/// or a key only ssh-agent holds (added from elsewhere, or served by a token).
 pub struct Key {
-    /// Private key path (the thing you pass to `ssh -i`).
-    pub path: PathBuf,
+    /// Private key path (the thing you pass to `ssh -i`), `None` for a key only
+    /// the agent holds.
+    pub path: Option<PathBuf>,
     /// Algorithm, e.g. `ssh-ed25519`, prettified to `ED25519`.
     pub kind: String,
     /// Key size in bits, as `ssh-keygen -lf` reports it.
@@ -25,8 +28,8 @@ pub struct Key {
     /// `SHA256:…` fingerprint from `ssh-keygen -lf`.
     pub fingerprint: String,
     /// This key's fingerprint is currently loaded in ssh-agent, so connecting
-    /// with it will not ask for anything.
-    pub agent_loaded: bool,
+    /// with it will not ask for anything; `None` when no agent is running.
+    pub agent_loaded: Option<bool>,
     /// The private key on disk is encrypted with a passphrase.
     pub encrypted: bool,
     /// Config aliases whose `IdentityFile` points at this key. Filled in by
@@ -35,28 +38,77 @@ pub struct Key {
 }
 
 impl Key {
-    /// Just the filename of the private key (what you'd recognize it by).
+    /// The filename of a private key in `~/.ssh` (what you'd recognize it by),
+    /// the `~`-collapsed path of one elsewhere, or for a key only the agent
+    /// holds its comment, else its fingerprint. Each is what `essh key install`
+    /// takes.
     pub fn name(&self) -> String {
-        self.path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
+        match &self.path {
+            Some(path) if path.parent() == Some(crate::sshcfg::ssh_dir().as_path()) => path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            Some(path) => crate::sshcfg::collapse_tilde(&path.to_string_lossy()),
+            None if self.comment.is_empty() => self.fingerprint.clone(),
+            None => self.comment.clone(),
+        }
     }
 }
 
-/// Every keypair in `~/.ssh`, sorted by filename. A `.pub` without its private
-/// counterpart is skipped - you can't `ssh -i` half a pair.
+/// The widest a key's name pads the name column to, so one long name pushes
+/// only its own row out of line.
+pub const NAME_COLUMN_MAX: usize = 24;
+
+/// What `ssh-add -l` answered.
+pub enum Agent {
+    /// The keys it holds, possibly none.
+    Holds(Vec<AgentKey>),
+    /// There is no agent to ask.
+    NotRunning,
+    /// An agent, or an `ssh-add`, that could not be read, with what it said.
+    Unreadable(String),
+}
+
+impl Agent {
+    /// The keys it holds, or `None` when it could not be asked.
+    pub fn keys(&self) -> Option<&[AgentKey]> {
+        match self {
+            Agent::Holds(keys) => Some(keys),
+            _ => None,
+        }
+    }
+}
+
+/// One key ssh-agent holds, as `ssh-add -l` describes it.
+pub struct AgentKey {
+    pub bits: String,
+    pub fingerprint: String,
+    pub comment: String,
+    /// The type `ssh-add -l` prints in brackets, e.g. `ED25519`.
+    pub kind: String,
+}
+
+/// Every keypair in `~/.ssh`, then every key the agent holds that none of
+/// them is.
 pub fn list() -> Vec<Key> {
+    list_with(&agent())
+}
+
+/// [`list`] against an agent already asked with [`agent`], so a caller that
+/// also reports the agent asks it once. Keypairs come sorted by filename and
+/// the agent's own keys after them by name. A `.pub` without its private
+/// counterpart is skipped, because you can't `ssh -i` half a pair.
+pub fn list_with(agent: &Agent) -> Vec<Key> {
     let dir = crate::sshcfg::ssh_dir();
     let mut keys = Vec::new();
+    let held = agent.keys();
+    let loaded: HashSet<&str> = held
+        .unwrap_or_default()
+        .iter()
+        .map(|k| k.fingerprint.as_str())
+        .collect();
 
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return keys;
-    };
-    // One `ssh-add -l` for the whole listing rather than one per key.
-    let loaded = agent_fingerprints();
-
-    for entry in entries.flatten() {
+    for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
         let pubpath = entry.path();
         // We iterate `.pub` files and derive the private path by dropping `.pub`.
         if pubpath.extension().and_then(|e| e.to_str()) != Some("pub") {
@@ -66,23 +118,66 @@ pub fn list() -> Vec<Key> {
         if !priv_path.exists() {
             continue;
         }
-
-        let (kind, comment) = parse_pub(&pubpath);
-        let (bits, fingerprint) = fingerprint(&pubpath);
-        keys.push(Key {
-            agent_loaded: loaded.contains(&fingerprint),
-            encrypted: is_encrypted(&priv_path),
-            fingerprint,
-            bits,
-            path: priv_path,
-            kind,
-            comment,
-            used_by: Vec::new(),
-        });
+        let mut key = read_pair(priv_path, &pubpath);
+        key.agent_loaded = held.map(|_| loaded.contains(key.fingerprint.as_str()));
+        keys.push(key);
     }
-
     keys.sort_by_key(|k| k.name());
+
+    let on_disk: HashSet<String> = keys.iter().map(|k| k.fingerprint.clone()).collect();
+    let mut agent_only: Vec<Key> = held
+        .unwrap_or_default()
+        .iter()
+        .filter(|a| !on_disk.contains(&a.fingerprint))
+        .map(|a| {
+            let mut key = pair_outside(a).unwrap_or_else(|| Key {
+                path: None,
+                kind: a.kind.clone(),
+                bits: a.bits.clone(),
+                comment: a.comment.clone(),
+                fingerprint: a.fingerprint.clone(),
+                agent_loaded: None,
+                encrypted: false,
+                used_by: Vec::new(),
+            });
+            key.agent_loaded = Some(true);
+            key
+        })
+        .collect();
+    agent_only.sort_by_key(|k| k.name());
+    // A key and its certificate are two agent keys read from one pair.
+    agent_only.dedup_by(|a, b| a.path.is_some() && a.path == b.path);
+    keys.extend(agent_only);
     keys
+}
+
+/// A keypair read from disk, with `agent_loaded` left for the caller.
+fn read_pair(priv_path: PathBuf, pubpath: &PathBuf) -> Key {
+    let (kind, comment) = parse_pub(pubpath);
+    let (bits, fingerprint) = fingerprint(pubpath);
+    Key {
+        agent_loaded: None,
+        encrypted: is_encrypted(&priv_path),
+        fingerprint,
+        bits,
+        path: Some(priv_path),
+        kind,
+        comment,
+        used_by: Vec::new(),
+    }
+}
+
+/// The pair outside `~/.ssh` an agent key was added from, when its comment is
+/// that path: `ssh-add` comments a key that has no comment of its own with the
+/// file it read. Only a pair with the agent key's own fingerprint counts.
+fn pair_outside(held: &AgentKey) -> Option<Key> {
+    let priv_path = PathBuf::from(&held.comment);
+    let pubpath = pub_path(&priv_path);
+    if !priv_path.is_absolute() || !priv_path.is_file() || !pubpath.is_file() {
+        return None;
+    }
+    let key = read_pair(priv_path, &pubpath);
+    (key.fingerprint == held.fingerprint).then_some(key)
 }
 
 /// Fill in `used_by`: which config aliases pin this key with `IdentityFile`.
@@ -91,11 +186,14 @@ pub fn list() -> Vec<Key> {
 pub fn link_hosts(keys: &mut [Key], hosts: &[crate::sshcfg::Host]) {
     for key in keys.iter_mut() {
         key.used_by.clear();
+        let Some(path) = &key.path else {
+            continue;
+        };
         for host in hosts {
             let Some(identity) = &host.identity else {
                 continue;
             };
-            if same_key(&key.path, identity) {
+            if same_key(path, identity) {
                 key.used_by.push(host.alias.clone());
             }
         }
@@ -117,25 +215,81 @@ fn same_key(path: &Path, identity: &str) -> bool {
     stripped == path || crate::sshcfg::ssh_dir().join(&stripped) == path
 }
 
-/// Fingerprints of everything ssh-agent currently holds. An agent that is not
-/// running, or holds nothing, is an empty set - never an error, since a missing
-/// agent just means every key shows as not loaded.
-fn agent_fingerprints() -> HashSet<String> {
+/// Ask ssh-agent what it holds. `ssh-add -l` exits 2 when it cannot reach an
+/// agent, and 1 both for an empty one, which it says on stdout, and for a
+/// failed fetch, which it explains on stderr.
+pub fn agent() -> Agent {
     let Ok(out) = Command::new("ssh-add").arg("-l").output() else {
-        return HashSet::new();
+        return Agent::Unreadable("could not run `ssh-add`".into());
     };
-    if !out.status.success() {
-        return HashSet::new();
-    }
-    // Each line is `<bits> SHA256:<hash> <comment> (<TYPE>)`.
-    String::from_utf8_lossy(&out.stdout)
+    let said: Vec<&str> = std::str::from_utf8(&out.stderr)
+        .unwrap_or_default()
         .lines()
-        .filter_map(|l| {
-            l.split_whitespace()
-                .find(|t| t.starts_with("SHA256:"))
-                .map(str::to_string)
+        .filter(|l| !l.trim().is_empty())
+        .take(5)
+        .collect();
+    match out.status.code() {
+        Some(0) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            Agent::Holds(text.lines().filter_map(parse_agent_line).collect())
+        }
+        Some(1) if said.is_empty() => Agent::Holds(Vec::new()),
+        Some(2) => Agent::NotRunning,
+        _ if said.is_empty() => Agent::Unreadable("`ssh-add -l` failed".into()),
+        _ => Agent::Unreadable(said.join(" ")),
+    }
+}
+
+/// One line of `ssh-add -l`: `<bits> SHA256:<hash> <comment...> (<TYPE>)`,
+/// where the comment may hold spaces.
+fn parse_agent_line(line: &str) -> Option<AgentKey> {
+    let (bits, rest) = line.trim().split_once(' ')?;
+    let (fingerprint, rest) = rest.split_once(' ')?;
+    let (comment, kind) = rest.rsplit_once(' ')?;
+    let kind = kind.strip_prefix('(')?.strip_suffix(')')?;
+    Some(AgentKey {
+        bits: bits.to_string(),
+        fingerprint: fingerprint.to_string(),
+        comment: comment.to_string(),
+        kind: kind.to_string(),
+    })
+}
+
+/// The public key line the agent holds for this fingerprint and `ssh-add -l`
+/// type (a key and its certificate share a fingerprint), for a key with no
+/// `.pub` on disk to read it from; `None` once the agent no longer holds it.
+pub fn agent_public(fingerprint: &str, kind: &str) -> Option<String> {
+    let listed = Command::new("ssh-add").arg("-L").output().ok()?;
+    if !listed.status.success() {
+        return None;
+    }
+    // `ssh-keygen -lf -` prints one fingerprint per line it reads, in order,
+    // which is what pairs each `ssh-add -L` line with its fingerprint.
+    let mut keygen = Command::new("ssh-keygen")
+        .args(["-l", "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    keygen.stdin.take()?.write_all(&listed.stdout).ok()?;
+    let printed = keygen.wait_with_output().ok()?;
+    let publics = String::from_utf8_lossy(&listed.stdout);
+    let prints = String::from_utf8_lossy(&printed.stdout);
+    let publics: Vec<&str> = publics.lines().collect();
+    let prints: Vec<&str> = prints.lines().collect();
+    if publics.len() != prints.len() {
+        return None;
+    }
+    let kind = format!("({kind})");
+    publics
+        .into_iter()
+        .zip(prints)
+        .find(|(_, p)| {
+            p.split_whitespace().nth(1) == Some(fingerprint)
+                && p.split_whitespace().last() == Some(kind.as_str())
         })
-        .collect()
+        .map(|(public, _)| public.to_string())
 }
 
 /// Is the private key passphrase-protected? `ssh-keygen -y` derives the public
