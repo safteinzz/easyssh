@@ -2,7 +2,7 @@
 # on the Mounts tab, raspi's home listed from the shell like any local folder,
 # then Enter taking it down and bringing it back, the line kept either way.
 #
-#   cd demo && vhs mount.tape && ./stage.sh down
+#   cd demo && ./render.sh mount
 #
 # `raspi` is the stage's throwaway sshd, so the mount is real.
 

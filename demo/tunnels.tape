@@ -1,7 +1,7 @@
 # Forward a port: a forward made from raspi's row, running on the Tunnels tab,
 # then turned off and back on with Enter, the line kept either way.
 #
-#   cd demo && vhs tunnels.tape && ./stage.sh down
+#   cd demo && ./render.sh tunnels
 #
 # `raspi` is the stage's throwaway sshd, so the forward really runs.
 

@@ -20,9 +20,10 @@
 # here and thrown away. There is nothing real in it to leak.
 #
 # A login, a tunnel and a mount need a server that really speaks ssh, so `raspi`
-# is one: a throwaway sshd in a podman container on 127.0.0.6, with an invented
-# user, hostname and home, removed on `down`. The first `up` builds its image,
-# which needs the network once.
+# is one: an sshd on 127.0.0.6 with an invented user, hostname and home. Under
+# render.sh it is already running in the render container; on a bare machine
+# `up` starts it in a podman container of its own, removed on `down`, whose
+# image the first `up` builds with the network.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -185,6 +186,17 @@ EOF
 # `fresh` starts it like a new machine instead: no key installed, and the
 # password `raspberry` accepted until `ssh-copy-id` puts one there.
 start_sshd() {
+  # render.sh's container: raspi is up, so only trust its host key and hand it
+  # the key it lets in.
+  if [ -d /run/raspi ]; then
+    echo "[$RASPI_HOST]:$PORT $(cut -d' ' -f1,2 /run/raspi/host_key.pub)" > "$STAGE/.ssh/known_hosts"
+    if [ -n "${FRESH:-}" ]; then
+      : > /run/raspi/authorized_keys
+    else
+      cp "$STAGE/.ssh/id_ed25519.pub" /run/raspi/authorized_keys
+    fi
+    return 0
+  fi
   [ -n "$CENGINE" ] || { echo "no podman: raspi will not answer, so login, tunnel and mount fail" >&2; return 0; }
   local ctx="$STAGE/.sshd"
   mkdir -p "$ctx"

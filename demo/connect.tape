@@ -2,7 +2,7 @@
 # form, its key installed with ssh-copy-id and the password typed that once, then
 # Enter logging in on the key alone.
 #
-#   cd demo && vhs connect.tape && ./stage.sh down
+#   cd demo && ./render.sh connect
 #
 # It stages `fresh`: raspi is a throwaway sshd that is not in the config yet
 # and takes the password `raspberry` until it has a key.

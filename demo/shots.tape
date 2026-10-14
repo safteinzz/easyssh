@@ -1,7 +1,7 @@
 # The README's two stills, Keys and Settings, rendered by VHS instead of taken
 # by hand. The rest of the pictures are GIFs, one tape each.
 #
-#   cd demo && vhs shots.tape
+#   cd demo && ./render.sh shots
 #
 # The files are written straight into readme-assets/.
 
