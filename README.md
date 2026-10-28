@@ -54,7 +54,7 @@ Whether the agent holds a key and whether it asks for a passphrase, at a glance.
 
 ## Your defaults, not mine
 
-![Settings tab, grouped into behaviour and defaults](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/settings.png)
+![Settings tab, grouped into behaviour, hosts and defaults](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/settings.png)
 
 Where mounts land, host order, what runs a login and more. `↵` changes one and `d` puts it back.
 
@@ -107,6 +107,7 @@ Everything under `~/.config/easyssh` can live in your dotfiles.
 ## Notes
 
 - It never stores your keys or passwords: the real `ssh` tools and your agent do the work.
+- The host you are on is left out of Hosts and `essh ls`, so every machine can share one `~/.ssh/config`, and `Show self` in Settings lists it again.
 - Yanking needs `wl-copy`, `xclip`, `xsel` or `pbcopy` on PATH; it names the one it used and installs nothing.
 - `essh cp` copies with rsync, one progress line for the whole copy, when it is on both machines and the destination is a folder, and with scp otherwise.
 - Pasting images needs `wl-paste`, `xclip` or `pngpaste` here, and on the host Linux, `~/.local/bin` ahead of `/usr/bin` in its `PATH`, and `python3`, `perl`, `socat` or an `nc` with `-U`.

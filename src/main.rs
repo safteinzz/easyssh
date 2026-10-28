@@ -16,6 +16,7 @@ mod commands;
 mod completion;
 mod history;
 mod keys;
+mod machine;
 mod mounts;
 mod paste;
 mod reach;
@@ -107,9 +108,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// List every host in ~/.ssh/config, or a folder on one  [HOST:PATH]
+    /// List every host in ~/.ssh/config but the machine you are on, or a folder on one  [HOST:PATH]
     ///   -v      also show where each alias connects
-    ///   --json  every host and its settings, for a script
+    ///   --json  every host and its settings, the machine you are on marked `self`, for a script
     #[command(verbatim_doc_comment)]
     Ls(commands::ls::Args),
     /// Copy files: alias:path shorthand, folders without -r, rsync into a folder when both sides have it  <PATH> <PATH>...

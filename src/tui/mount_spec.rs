@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn a_home_relative_remote_path_reaches_sshfs_without_its_tilde() {
         // sftp has no `~`, so `raspi:~/dotfiles` looks for a folder named `~`.
-        assert_eq!(remote_path("~/dotfiles/canon"), "dotfiles/canon");
+        assert_eq!(remote_path("~/dotfiles/vim"), "dotfiles/vim");
         assert_eq!(remote_path("~"), "", "blank is the login home");
         assert_eq!(remote_path("~/"), "");
         assert_eq!(remote_path("/etc/nginx"), "/etc/nginx");

@@ -1,11 +1,12 @@
-//! `essh ls` - every host in your config, one per line. This is your old
-//! `grep '^Host ' ~/.ssh/config | grep -v '*' | awk '{print $2}'` alias, built
-//! in, so you never have to remember the names again. Given `host:path` it
-//! lists that folder on the host instead.
+//! `essh ls`: every host in your config but the machine you are on, one per
+//! line. This is your old `grep '^Host ' ~/.ssh/config | grep -v '*' | awk
+//! '{print $2}'` alias, built in, so you never have to remember the names
+//! again. Given `host:path` it lists that folder on the host instead.
 
 use super::cp::remote_alias;
 use crate::completion::remote_dir;
-use crate::sshcfg;
+use crate::machine::ThisMachine;
+use crate::{settings, sshcfg};
 use colored::Colorize;
 use std::process::Command;
 
@@ -27,6 +28,7 @@ pub fn run(args: Args) {
         list_remote(remote);
     }
     let hosts = sshcfg::list_hosts();
+    let here = ThisMachine::read();
 
     if args.json.json {
         use super::{json_array, json_opt, json_str};
@@ -34,7 +36,7 @@ pub fn run(args: Args) {
             .iter()
             .map(|h| {
                 format!(
-                    "{{\"alias\": {}, \"hostname\": {}, \"user\": {}, \"port\": {}, \"key\": {}, \"jump\": {}, \"command\": {}, \"forward_agent\": {}}}",
+                    "{{\"alias\": {}, \"hostname\": {}, \"user\": {}, \"port\": {}, \"key\": {}, \"jump\": {}, \"command\": {}, \"forward_agent\": {}, \"self\": {}}}",
                     json_str(&h.alias),
                     json_opt(h.hostname.as_deref()),
                     json_opt(h.user.as_deref()),
@@ -43,6 +45,7 @@ pub fn run(args: Args) {
                     json_opt(h.proxy_jump.as_deref()),
                     json_opt(h.remote_command.as_deref()),
                     json_opt(h.forward_agent.as_deref()),
+                    here.is(h),
                 )
             })
             .collect();
@@ -54,6 +57,18 @@ pub fn run(args: Args) {
         eprintln!(
             "{}",
             "No hosts in ~/.ssh/config yet: `essh host add <ALIAS>` adds one.".dimmed()
+        );
+        return;
+    }
+    let show_self = settings::load().show_self;
+    let hosts: Vec<sshcfg::Host> = hosts
+        .into_iter()
+        .filter(|h| show_self || !here.is(h))
+        .collect();
+    if hosts.is_empty() {
+        eprintln!(
+            "{}",
+            "Only this machine is in ~/.ssh/config: `essh host add <ALIAS>` adds another.".dimmed()
         );
         return;
     }

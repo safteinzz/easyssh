@@ -9,6 +9,7 @@
 
 use crate::history;
 use crate::keys::{self};
+use crate::machine::ThisMachine;
 use crate::mounts;
 use crate::paste;
 use crate::reach::{self, Reach};
@@ -189,6 +190,9 @@ pub(super) struct App {
     pub(super) copy_check: Option<connect::CopyCheck>,
     /// The aliases that get image paste (`~/.config/easyssh/paste`).
     pub(super) paste: Vec<String>,
+    /// The aliases that log in to the machine essh runs on, which Hosts leaves
+    /// out unless `show_self` is on.
+    pub(super) this_machine: Vec<String>,
     /// The choices that are yours rather than ssh's.
     pub(super) settings: Settings,
     pub(super) settings_state: ListState,
@@ -231,6 +235,7 @@ impl App {
             new_mount: None,
             copy_check: None,
             paste: Vec::new(),
+            this_machine: Vec::new(),
             settings: Settings::default(),
             settings_state: ListState::default(),
         }
@@ -310,6 +315,13 @@ impl App {
 
     pub(super) fn refresh_hosts(&mut self) {
         self.hosts = sshcfg::list_hosts();
+        let here = ThisMachine::read();
+        self.this_machine = self
+            .hosts
+            .iter()
+            .filter(|h| here.is(h))
+            .map(|h| h.alias.clone())
+            .collect();
         self.paste = paste::enabled().into_iter().map(|e| e.alias).collect();
         self.sort_hosts();
         let n = self.host_rows().len();
@@ -421,12 +433,18 @@ impl App {
 
     // --- filtering --------------------------------------------------------
 
-    /// Indices into `hosts` that survive the current query.
+    /// Whether Hosts shows `h` at all, before any query.
+    pub(super) fn listed(&self, h: &Host) -> bool {
+        self.settings.show_self || !self.this_machine.contains(&h.alias)
+    }
+
+    /// Indices into `hosts` that are listed and survive the current query.
     pub(super) fn host_rows(&self) -> Vec<usize> {
         let target = |h: &Host| h.target();
         self.hosts
             .iter()
             .enumerate()
+            .filter(|(_, h)| self.listed(h))
             .filter(|(_, h)| {
                 let target = target(h);
                 filter::matches(

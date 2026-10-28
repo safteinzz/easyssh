@@ -90,12 +90,13 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
     match app.view {
         View::Hosts => {
             let rows = app.host_rows();
-            if let Some(msg) = nothing_here(
-                app,
-                app.hosts.len(),
-                rows.len(),
-                "No hosts in ~/.ssh/config yet.\nPress `c` to add one.",
-            ) {
+            let total = app.hosts.iter().filter(|h| app.listed(h)).count();
+            let when_empty = if app.hosts.is_empty() {
+                "No hosts in ~/.ssh/config yet.\nPress `c` to add one."
+            } else {
+                "Only this machine is in ~/.ssh/config.\nPress `c` to add a host, or turn on Show self in Settings."
+            };
+            if let Some(msg) = nothing_here(app, total, rows.len(), when_empty) {
                 empty(f, area, "Hosts", &msg);
                 return;
             }
@@ -133,7 +134,7 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                 })
                 .collect();
             let list = List::new(items)
-                .block(counted("Hosts", rows.len(), app.hosts.len()))
+                .block(counted("Hosts", rows.len(), total))
                 .highlight_style(sel)
                 .highlight_symbol("▸ ");
             f.render_stateful_widget(list, area, &mut app.host_state);

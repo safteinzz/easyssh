@@ -28,6 +28,9 @@ pub struct Settings {
     /// How long a probe waits for the TCP handshake, in seconds.
     pub probe_timeout: u64,
     pub host_order: HostOrder,
+    /// Whether Hosts and `essh ls` show the host that is the machine essh runs
+    /// on (`machine::ThisMachine`).
+    pub show_self: bool,
     /// What runs an interactive login. `ssh`, or a wrapper like `kitten ssh`.
     pub ssh_command: String,
     /// Where the sftp server lives on the *remote* side, for a sudo mount.
@@ -43,6 +46,7 @@ impl Default for Settings {
             probe: true,
             probe_timeout: 2,
             host_order: HostOrder::Recent,
+            show_self: false,
             ssh_command: "ssh".into(),
             sftp_server: "/usr/lib/openssh/sftp-server".into(),
         }
@@ -51,13 +55,15 @@ impl Default for Settings {
 
 /// One editable line in the Settings tab. `choices` is what makes it a cycled
 /// answer rather than a typed one.
-/// The two kinds of setting, which are not the same promise: one decides what
-/// easyssh does, the other only decides what a wizard offers you before you
-/// overwrite it.
+/// The kinds of setting, which are not the same promise: one decides what
+/// easyssh does, one only what the host list shows, and one only what a wizard
+/// offers you before you overwrite it.
 #[derive(PartialEq, Clone, Copy)]
 pub enum Group {
     /// Always in force.
     Behaviour,
+    /// Which hosts Hosts and `essh ls` show, and in what order.
+    Hosts,
     /// Pre-fills a wizard field; every use can still say otherwise.
     Default,
 }
@@ -66,6 +72,7 @@ impl Group {
     pub fn label(&self) -> &'static str {
         match self {
             Group::Behaviour => "behaviour",
+            Group::Hosts => "hosts",
             Group::Default => "defaults",
         }
     }
@@ -88,7 +95,7 @@ impl Row {
     }
 }
 
-const PROBE_CHOICES: &[&str] = &["on", "off"];
+const ON_OFF: &[&str] = &["on", "off"];
 const TIMEOUT_CHOICES: &[&str] = &["1", "2", "3", "5", "10"];
 const ORDER_CHOICES: &[&str] = &["recent", "alphabetical"];
 
@@ -141,6 +148,7 @@ impl Settings {
                     _ => HostOrder::Recent,
                 }
             }
+            "show_self" => self.show_self = value == "on",
             "ssh_command" => self.ssh_command = non_empty(value, "ssh"),
             "sftp_server" => self.sftp_server = non_empty(value, "/usr/lib/openssh/sftp-server"),
             _ => {}
@@ -173,8 +181,9 @@ impl Settings {
     /// Everything the Settings tab shows, in the order it shows it.
     pub fn rows(&self) -> Vec<Row> {
         let d = Settings::default();
-        // Behaviour first, then the wizard defaults: what easyssh always does
-        // reads differently from what it merely suggests.
+        // Behaviour first, then what the host list shows, then the wizard
+        // defaults: what easyssh always does reads differently from what it
+        // merely suggests.
         vec![
             Row {
                 key: "probe",
@@ -183,7 +192,7 @@ impl Settings {
                 help: "ask each host's ssh port whether it answers, for the up/down dot",
                 value: on_off(self.probe).into(),
                 default: on_off(d.probe).into(),
-                choices: Some(PROBE_CHOICES),
+                choices: Some(ON_OFF),
             },
             Row {
                 key: "probe_timeout",
@@ -195,8 +204,17 @@ impl Settings {
                 choices: Some(TIMEOUT_CHOICES),
             },
             Row {
-                key: "host_order",
+                key: "ssh_command",
                 group: Group::Behaviour,
+                label: "Connect with",
+                help: "what runs a login: ssh, or a wrapper such as `kitten ssh`",
+                value: self.ssh_command.clone(),
+                default: d.ssh_command.clone(),
+                choices: None,
+            },
+            Row {
+                key: "host_order",
+                group: Group::Hosts,
                 label: "Host order",
                 help: "recent = last connected first · alphabetical = like essh ls",
                 value: match self.host_order {
@@ -207,13 +225,13 @@ impl Settings {
                 choices: Some(ORDER_CHOICES),
             },
             Row {
-                key: "ssh_command",
-                group: Group::Behaviour,
-                label: "Connect with",
-                help: "what runs a login: ssh, or a wrapper such as `kitten ssh`",
-                value: self.ssh_command.clone(),
-                default: d.ssh_command.clone(),
-                choices: None,
+                key: "show_self",
+                group: Group::Hosts,
+                label: "Show self",
+                help: "when ~/.ssh/config has the machine you are on, whether Hosts and essh ls list it",
+                value: on_off(self.show_self).into(),
+                default: on_off(d.show_self).into(),
+                choices: Some(ON_OFF),
             },
             Row {
                 key: "mount_root",
