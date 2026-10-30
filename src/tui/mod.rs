@@ -20,6 +20,7 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyEventKind},
     execute,
+    style::{Attribute, SetAttribute},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::Terminal;
@@ -798,7 +799,7 @@ fn run_suspended(
     }
 
     enable_raw_mode()?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    enter_alt_screen(terminal.backend_mut())?;
     terminal.hide_cursor()?;
     terminal.clear()?;
     Ok(output)
@@ -807,8 +808,15 @@ fn run_suspended(
 fn setup() -> Result<Term> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    enter_alt_screen(&mut stdout)?;
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
+}
+
+/// Enter the alt-screen with colours and attributes reset, because whatever ran
+/// before us can leave a background set (a Windows sshd does) and terminals
+/// paint every erased cell with it.
+fn enter_alt_screen(out: &mut impl io::Write) -> io::Result<()> {
+    execute!(out, SetAttribute(Attribute::Reset), EnterAlternateScreen)
 }
 
 fn teardown(terminal: &mut Term) -> Result<()> {
