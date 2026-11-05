@@ -219,6 +219,11 @@ impl App {
                         None
                     }
                 };
+                argv.extend(crate::commands::connect::keepalive_args(
+                    &alias,
+                    &[],
+                    self.settings.keepalive,
+                ));
                 argv.push(alias.clone());
                 if let Some(f) = &forward {
                     let at = argv.len() - 1;
@@ -506,8 +511,8 @@ impl App {
         }
     }
 
-    /// The Mounts tab, keyed the way Tunnels is: Enter mounts or unmounts, and
-    /// `d` deletes the line.
+    /// The Mounts tab, keyed the way Tunnels is: Enter mounts or unmounts, `e`
+    /// rewrites the line and mounts it again, and `d` deletes the line.
     pub(super) fn mounts_key(&mut self, key: KeyEvent) -> Option<PendingRun> {
         match key.code {
             KeyCode::Enter => {
@@ -522,6 +527,11 @@ impl App {
                     return None;
                 }
                 self.start_mount(spec, false)
+            }
+            KeyCode::Char('e') => {
+                let prompt = Prompt::edit_mount(self.selected_mount()?, &self.settings);
+                self.prompt = Some(prompt);
+                None
             }
             KeyCode::Char('d') => {
                 let m = self.selected_mount()?;

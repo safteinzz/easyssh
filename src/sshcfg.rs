@@ -219,6 +219,58 @@ pub fn forward_agent_for(alias: &str) -> String {
     effective_forward_agent(&text, alias)
 }
 
+/// Whether the config ssh reads for `alias`, yours or the system's, sets
+/// `ServerAliveInterval` for it, a `0` that turns it off included.
+pub fn sets_server_alive(alias: &str) -> bool {
+    [config_path(), PathBuf::from("/etc/ssh/ssh_config")]
+        .iter()
+        .any(|p| fs::read_to_string(p).is_ok_and(|t| server_alive_in(&t, alias, true)))
+}
+
+/// `sets_server_alive` over one file's text. A line before any `Host` applies to
+/// every host, and one under a `Match` counts as applying, because its condition
+/// is not evaluated here and overriding a value you set costs more than leaving
+/// a host without the keepalive.
+fn server_alive_in(text: &str, alias: &str, follow_includes: bool) -> bool {
+    let mut applies = true;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = split_kv(line);
+        match key.to_ascii_lowercase().as_str() {
+            "host" => applies = host_line_matches(value, alias),
+            "match" => applies = true,
+            "include" if follow_includes && applies => {
+                let found = expand_include(value)
+                    .iter()
+                    .any(|p| fs::read_to_string(p).is_ok_and(|t| server_alive_in(&t, alias, true)));
+                if found {
+                    return true;
+                }
+            }
+            "serveraliveinterval" if applies => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether a `Host` line's patterns take `alias`: one of them matches and no
+/// negated one does, since a negated match rules out the whole line.
+fn host_line_matches(patterns: &str, alias: &str) -> bool {
+    let mut hit = false;
+    for p in patterns.split_whitespace() {
+        match p.strip_prefix('!') {
+            Some(neg) if wildmatch(neg, alias) => return false,
+            Some(_) => {}
+            None => hit |= wildmatch(p, alias),
+        }
+    }
+    hit
+}
+
 /// Who and where `ssh <alias>` logs in to, as ssh itself resolves it.
 pub struct Login {
     pub user: String,

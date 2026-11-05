@@ -1,7 +1,7 @@
 //! The handful of choices that are yours rather than ssh's, kept in
 //! `~/.config/easyssh/settings` as `key = value` lines you can read and edit by
-//! hand. Nothing here changes what ssh does; it changes what easyssh assumes
-//! before you type anything.
+//! hand. Nothing here edits your ssh config: it changes what easyssh assumes
+//! before you type anything and what it adds to a login it starts.
 //!
 //! Every setting has a default that works with no file at all, so a fresh
 //! install writes nothing until you change something. An unknown key is left
@@ -33,6 +33,9 @@ pub struct Settings {
     pub show_self: bool,
     /// What runs an interactive login. `ssh`, or a wrapper like `kitten ssh`.
     pub ssh_command: String,
+    /// The `ServerAliveInterval` a login gets when its host sets none, in
+    /// seconds, where `0` leaves ssh's default, which never checks.
+    pub keepalive: u64,
     /// Where the sftp server lives on the *remote* side, for a sudo mount.
     pub sftp_server: String,
 }
@@ -48,6 +51,7 @@ impl Default for Settings {
             host_order: HostOrder::Recent,
             show_self: false,
             ssh_command: "ssh".into(),
+            keepalive: 15,
             sftp_server: "/usr/lib/openssh/sftp-server".into(),
         }
     }
@@ -98,6 +102,7 @@ impl Row {
 const ON_OFF: &[&str] = &["on", "off"];
 const TIMEOUT_CHOICES: &[&str] = &["1", "2", "3", "5", "10"];
 const ORDER_CHOICES: &[&str] = &["recent", "alphabetical"];
+const KEEPALIVE_CHOICES: &[&str] = &["off", "5", "10", "15", "30", "60"];
 
 pub fn path() -> PathBuf {
     dirs::config_dir()
@@ -150,6 +155,13 @@ impl Settings {
             }
             "show_self" => self.show_self = value == "on",
             "ssh_command" => self.ssh_command = non_empty(value, "ssh"),
+            "keepalive" => {
+                if value == "off" {
+                    self.keepalive = 0;
+                } else if let Ok(n) = value.parse::<u64>() {
+                    self.keepalive = n.min(3600);
+                }
+            }
             "sftp_server" => self.sftp_server = non_empty(value, "/usr/lib/openssh/sftp-server"),
             _ => {}
         }
@@ -207,10 +219,19 @@ impl Settings {
                 key: "ssh_command",
                 group: Group::Behaviour,
                 label: "Connect with",
-                help: "what runs a login: ssh, or a wrapper such as `kitten ssh`",
+                help: "what runs a login: ssh, or a wrapper that takes ssh's flags, such as `kitten ssh`",
                 value: self.ssh_command.clone(),
                 default: d.ssh_command.clone(),
                 choices: None,
+            },
+            Row {
+                key: "keepalive",
+                group: Group::Behaviour,
+                label: "Keepalive",
+                help: "seconds between checks that a login's host still answers, so a dropped connection ends about 4 of these after the last answer instead of freezing, unless the config sets its own (ServerAliveInterval)",
+                value: keepalive_word(self.keepalive),
+                default: keepalive_word(d.keepalive),
+                choices: Some(KEEPALIVE_CHOICES),
             },
             Row {
                 key: "host_order",
@@ -286,6 +307,13 @@ impl Settings {
             body.push_str(&format!("{} = {}\n", row.key, row.value));
         }
         fs::write(path, body).with_context(|| format!("writing {}", path.display()))
+    }
+}
+
+fn keepalive_word(seconds: u64) -> String {
+    match seconds {
+        0 => "off".into(),
+        n => n.to_string(),
     }
 }
 

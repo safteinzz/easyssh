@@ -55,7 +55,7 @@ mod widgets;
 mod wizard;
 
 use confirm::Confirm;
-use connect::diagnose;
+use connect::{Ending, diagnose};
 use detail::render_detail;
 use mount_spec::{MountSpec, shell_join};
 use picker::Picker;
@@ -102,7 +102,7 @@ const HOSTS_KEYS: &[&str] = &[
 ];
 const KEYS_KEYS: &[&str] = &[YANK, "Y install", CREATE, FIND, REFRESH, QUIT];
 const TUNNELS_KEYS: &[&str] = &["↵ on/off", CREATE, EDIT, DEL, FIND, REFRESH, QUIT];
-const MOUNTS_KEYS: &[&str] = &["↵ on/off", DEL, FIND, REFRESH, QUIT];
+const MOUNTS_KEYS: &[&str] = &["↵ on/off", EDIT, DEL, FIND, REFRESH, QUIT];
 const SETTINGS_KEYS: &[&str] = &["↵ change", DEFAULT, FIND, REFRESH, QUIT];
 
 /// How long a status message stays on screen before the hints return.
@@ -297,7 +297,6 @@ impl App {
     pub(super) fn new() -> Self {
         let mut app = Self::empty();
         app.settings = settings::load();
-        app.history = history::load();
         app.refresh_all();
         app.start_probes();
         app
@@ -315,7 +314,13 @@ impl App {
     }
 
     pub(super) fn refresh_hosts(&mut self) {
+        // The order can change under the cursor, so it follows its host rather
+        // than staying on a row number.
+        let selected = self.selected_host().map(|h| h.alias.clone());
         self.hosts = sshcfg::list_hosts();
+        // Read again every time, because a login started from any other essh
+        // moves its host too.
+        self.history = history::load();
         let here = ThisMachine::read();
         self.this_machine = self
             .hosts
@@ -327,6 +332,9 @@ impl App {
         self.sort_hosts();
         let n = self.host_rows().len();
         Self::clamp(&mut self.host_state, n);
+        if let Some(alias) = selected {
+            self.select_host(&alias);
+        }
     }
 
     /// Most recently connected first, then everything you have never opened,
@@ -532,6 +540,34 @@ impl App {
         }
     }
 
+    /// The mount already at `local`, other than the one at `except`: mounting
+    /// there would replace its kept line, or stack on a folder it holds.
+    pub(super) fn mount_at(&self, local: &str, except: Option<&str>) -> Option<&mounts::Mount> {
+        let raw = local.trim_end_matches('/');
+        // A listed mountpoint is compared as typed, so a stale one is never
+        // touched; anything else is resolved the way `/proc/mounts` spells it.
+        let real = if self.mounts.iter().any(|m| m.local == raw) {
+            raw.to_string()
+        } else {
+            fs::canonicalize(raw)
+                .map_or_else(|_| raw.to_string(), |p| p.to_string_lossy().into_owned())
+        };
+        self.mounts
+            .iter()
+            .find(|m| m.local == real && Some(m.local.as_str()) != except)
+    }
+
+    /// Put the cursor on `alias`, when Hosts lists it.
+    pub(super) fn select_host(&mut self, alias: &str) {
+        let at = self
+            .host_rows()
+            .iter()
+            .position(|&r| self.hosts[r].alias == alias);
+        if let Some(i) = at {
+            self.host_state.select(Some(i));
+        }
+    }
+
     /// Put the cursor on this forward: the one you just made is the one you are
     /// looking for, and on a busy list it is not row one. Found by what it
     /// forwards rather than by pid, so it works for one that is off too.
@@ -690,7 +726,13 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
         app.drain_probes();
         // With nothing pressed this is just a redraw, so a stale status drops off.
         if let Some(mut run) = run.or_else(|| app.drain_copy_check()) {
-            let capture = run.paste.is_some().then_some(run.label.as_str());
+            // A login counts from the moment it starts, so one that is still
+            // open, or whose terminal was closed, already moves its host up.
+            let stamp = run.connect.as_deref().and_then(history::record);
+            let capture = match &run.paste {
+                Some(_) => Capture::All(&run.label),
+                None => Capture::StderrTail,
+            };
             let output = run_suspended(terminal, &run.argv, capture)?;
             drop(run.forward.take());
             if let Some(job) = run.paste.take() {
@@ -698,40 +740,67 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 app.refresh_all();
                 continue;
             }
+            let said = output
+                .as_ref()
+                .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+                .unwrap_or_default();
             let status = output.map(|o| o.status);
 
-            // ssh prints why a login failed and we wipe it when we redraw, so a
-            // 255 is probed again non-interactively and explained in a box.
             let failed_255 = matches!(status, Some(ref s) if s.code() == Some(255));
             let mut explained = run
                 .key_via
                 .as_ref()
                 .is_some_and(|kv| app.explain_key_via(kv, status.as_ref().and_then(|s| s.code())));
             if let Some(host) = run.connect.clone() {
-                if failed_255 {
+                let session = match status {
+                    Some(_) if failed_255 => match connect::ending(&said) {
+                        Ending::Lost(lines) => {
+                            app.explain_lost(&host, &shell_join(&run.argv), &lines);
+                            explained = true;
+                            true
+                        }
+                        Ending::Closed => true,
+                        Ending::NoSession => false,
+                    },
+                    Some(_) => true,
+                    None => false,
+                };
+                if !session && let Some(stamp) = stamp {
+                    history::unrecord(stamp);
+                }
+                // ssh printed why on the screen we just left, so it is probed and
+                // explained in a box, the list drawn first since a probe can wait.
+                if failed_255 && !session {
+                    app.set_failed(format!(
+                        "{} failed, so checking why (ssh -o BatchMode=yes {host})",
+                        run.label
+                    ));
+                    terminal.draw(|f| ui(f, app))?;
                     if let Some((d, said)) = diagnose(&host) {
                         app.explain_connect_failure(&host, d, &said);
                         explained = true;
                     }
-                } else {
-                    // A connect that got as far as a session is what makes a
-                    // host "recent"; a failed one leaves the ordering alone.
-                    history::record(&host);
-                    app.history = history::load();
                 }
             }
 
             match status {
                 _ if explained => {}
                 Some(s) if s.success() => app.set_status(format!("{} ✓", run.label)),
-                // It ran and came back non-zero: the program printed its own
-                // reason on the screen we then drew over, but the exit code on
-                // its own has nothing to explain, so it stays a status line.
-                Some(s) => app.set_failed(format!(
-                    "{} failed (exit {})",
-                    run.label,
-                    s.code().unwrap_or(-1)
-                )),
+                // A login's stderr is only ssh's, about a session that ran; any
+                // other program's says why it failed, on a screen we drew over.
+                Some(s) => {
+                    let what = format!("{} failed (exit {})", run.label, s.code().unwrap_or(-1));
+                    let why = run.connect.is_none().then(|| connect::said(&said));
+                    match why.filter(|w| !w.is_empty()) {
+                        Some(why) => app.report_failure(
+                            &format!("{} failed", run.argv[0]),
+                            &what,
+                            &shell_join(&run.argv),
+                            &why,
+                        ),
+                        None => app.set_failed(what),
+                    }
+                }
                 // Nothing ran at all. This is the only account of why the
                 // screen came back unchanged, so it gets a box rather than a
                 // line that clears itself after STATUS_TTL.
@@ -744,8 +813,7 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
                 ),
             }
             app.refresh_all();
-            // Every dot was learned before the child took the terminal, and the host we
-            // just logged into is provably up.
+            // Every dot was learned before the child took the terminal.
             app.start_probes();
             app.settle_new_mount();
         }
@@ -753,18 +821,22 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
     Ok(())
 }
 
+/// What `run_suspended` keeps of a child's output.
+enum Capture<'a> {
+    /// Stdout and stderr, shown nowhere, after printing this line first.
+    All(&'a str),
+    /// The end of stderr, which still reaches the screen as it arrives, so a
+    /// failure can be explained once the TUI is back.
+    StderrTail,
+}
+
 /// Leave the TUI, run an interactive command with the real terminal, then
 /// restore the TUI. This is what lets ssh/ssh-keygen/ssh-copy-id/sshfs prompt.
 ///
-/// When `capture` holds a line, it is printed first and the child's stdout and
-/// stderr come back in the `Output` instead of going to the screen; ssh still
-/// asks for a password, since it asks on the tty. Otherwise they are empty.
-/// `None` means the program could not be started.
-fn run_suspended(
-    terminal: &mut Term,
-    argv: &[String],
-    capture: Option<&str>,
-) -> Result<Option<Output>> {
+/// What comes back in the `Output` besides the status is what `capture` asks
+/// for, and empty otherwise, which never stops ssh asking for a password, since
+/// it asks on the tty. `None` means the program could not be started.
+fn run_suspended(terminal: &mut Term, argv: &[String], capture: Capture) -> Result<Option<Output>> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     // ratatui hides the cursor while drawing and leaving the alt-screen does not
@@ -778,20 +850,29 @@ fn run_suspended(
     let caught = crate::commands::connect::swallow_interrupts();
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..]);
-    let output = if let Some(line) = capture {
-        println!("{line}");
-        cmd.stdin(Stdio::inherit())
-            .stdout(Stdio::piped())
+    let output = match capture {
+        Capture::All(line) => {
+            println!("{line}");
+            cmd.stdin(Stdio::inherit())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|child| child.wait_with_output())
+                .ok()
+        }
+        Capture::StderrTail => cmd
             .stderr(Stdio::piped())
             .spawn()
-            .and_then(|child| child.wait_with_output())
-            .ok()
-    } else {
-        cmd.status().ok().map(|status| Output {
-            status,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        })
+            .and_then(|mut child| {
+                let tee = child.stderr.take().map(Tee::start);
+                let status = child.wait()?;
+                Ok(Output {
+                    status,
+                    stdout: Vec::new(),
+                    stderr: tee.map(Tee::finish).unwrap_or_default(),
+                })
+            })
+            .ok(),
     };
     #[cfg(unix)]
     for id in caught {
@@ -803,6 +884,59 @@ fn run_suspended(
     terminal.hide_cursor()?;
     terminal.clear()?;
     Ok(output)
+}
+
+/// How much of a child's stderr `Tee` keeps: ssh's last words fit many times.
+const TEE_KEEP: usize = 8192;
+
+/// A child's stderr copied to ours as it arrives, its last `TEE_KEEP` bytes
+/// kept for reading once the child is gone.
+struct Tee {
+    kept: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    /// Set once the child has exited, when anything still arriving would land
+    /// on top of the redrawn list.
+    quiet: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    eof: Receiver<()>,
+}
+
+impl Tee {
+    fn start(mut pipe: std::process::ChildStderr) -> Tee {
+        use std::io::{Read, Write};
+        use std::sync::atomic::Ordering;
+        let kept = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let quiet = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (eof_tx, eof) = channel();
+        let (keep, hush) = (kept.clone(), quiet.clone());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = match pipe.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
+                if !hush.load(Ordering::SeqCst) {
+                    let _ = io::stderr().write_all(&buf[..n]);
+                }
+                if let Ok(mut k) = keep.lock() {
+                    k.extend_from_slice(&buf[..n]);
+                    let over = k.len().saturating_sub(TEE_KEEP);
+                    k.drain(..over);
+                }
+            }
+            let _ = eof_tx.send(());
+        });
+        Tee { kept, quiet, eof }
+    }
+
+    /// What was kept. A ProxyJump's `ssh -W` can outlive the login and hold the
+    /// pipe open, so this waits a moment for the last words, never for the end.
+    fn finish(self) -> Vec<u8> {
+        let _ = self.eof.recv_timeout(Duration::from_millis(200));
+        self.quiet.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.kept.lock().map(|k| k.clone()).unwrap_or_default()
+    }
 }
 
 fn setup() -> Result<Term> {

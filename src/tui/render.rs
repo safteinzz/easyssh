@@ -533,6 +533,7 @@ const HELP: &[HelpSection] = &[
         "mounts",
         &[
             ("↵", "mount, unmount (sshfs, fusermount -u)"),
+            ("e", "edit it, mounting it again"),
             ("d", "delete it, unmounting it first"),
         ],
     ),

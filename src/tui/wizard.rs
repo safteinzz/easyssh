@@ -153,10 +153,14 @@ impl App {
     /// Re-do whatever a changed setting decides, so a new value is visible in
     /// the same frame rather than at the next launch.
     pub(super) fn apply_settings(&mut self) {
+        let selected = self.selected_host().map(|h| h.alias.clone());
         self.sort_hosts();
         self.start_probes();
         let n = self.host_rows().len();
         Self::clamp(&mut self.host_state, n);
+        if let Some(alias) = selected {
+            self.select_host(&alias);
+        }
     }
 
     /// A destination pasted into the add-host Alias field (`deploy@10.0.0.4:2222`,
@@ -303,15 +307,63 @@ impl App {
             Action::Mount {
                 host,
                 forced_command,
+                editing,
             } => {
                 // Blank remote path → sshfs mounts the login home directory.
                 let spec = MountSpec::from_fields(&host, forced_command, &prompt.fields);
-                if let Some(problem) = spec.problem() {
-                    self.set_status(problem);
+                let in_the_way = self
+                    .mount_at(&spec.local, editing.as_ref().map(|w| w.local.as_str()))
+                    .map(|m| m.describe());
+                let problem = spec.problem().or_else(|| {
+                    in_the_way.map(|m| format!("{m} is already there, so pick another folder"))
+                });
+                if let Some(problem) = problem {
+                    self.set_failed(problem);
                     self.prompt = Some(prompt);
                     return None;
                 }
-                self.start_mount(spec, true)
+                let Some(was) = editing else {
+                    return self.start_mount(spec, true);
+                };
+                // Checked before the old mount comes off, so a missing sshfs
+                // never leaves you with neither.
+                if !mounts::sshfs_installed() {
+                    self.prompt = Some(prompt);
+                    return self.start_mount(spec, true);
+                }
+                // The old mount holds the folder, so it comes off before the new
+                // one goes on, and a busy one leaves the wizard open to try again.
+                if was.on {
+                    if let Err(e) = mounts::unmount(&was.local) {
+                        let shown = sshcfg::collapse_tilde(&was.local);
+                        self.prompt = Some(prompt);
+                        self.report_failure(
+                            "unmount failed",
+                            &format!(
+                                "could not unmount {shown} to change it, so close what is using it (a shell cd'd in, an open file) and press ↵ again"
+                            ),
+                            &format!("fusermount -u {}", was.local),
+                            &e.to_string(),
+                        );
+                        return None;
+                    }
+                    let _ = fs::remove_dir(&was.local);
+                }
+                let run = self.start_mount(spec, true);
+                let Some(run) = run else {
+                    self.prompt = Some(prompt);
+                    return None;
+                };
+                // A new mountpoint is a new line, so the old one would stay behind
+                // as a second row; it goes only once the new line is in the file.
+                let new = self.new_mount.clone();
+                let written = mounts::saved()
+                    .iter()
+                    .any(|s| Some(&s.local) == new.as_ref());
+                if written && new.as_deref() != Some(was.local.as_str()) {
+                    let _ = mounts::forget(&was.local);
+                }
+                Some(run)
             }
 
             Action::EditSetting { key, label } => {

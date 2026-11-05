@@ -681,6 +681,8 @@ fn a_connect_run_says_so_rather_than_being_recognised_by_name() {
     // being argv[0] the moment the ssh_command setting names a wrapper.
     let mut app = app_with_host();
     app.settings.set("ssh_command", "kitten ssh");
+    // Off, so the real ~/.ssh/config is never read to decide on a keepalive.
+    app.settings.set("keepalive", "off");
     let run = app.on_key(press(KeyCode::Enter)).expect("Enter connects");
     assert_eq!(run.argv, vec!["kitten", "ssh", "raspi"]);
     assert_eq!(run.connect.as_deref(), Some("raspi"));

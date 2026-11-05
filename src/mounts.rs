@@ -65,7 +65,7 @@ impl Mount {
 
     /// The remote directory with the `~` the wizard dropped put back, since sftp
     /// resolves a relative path against the login home.
-    fn home_relative(&self) -> String {
+    pub fn home_relative(&self) -> String {
         match self.remote.split_once(':').map_or("", |(_, path)| path) {
             "" => "~".into(),
             path if path.starts_with('/') => path.into(),

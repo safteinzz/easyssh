@@ -23,9 +23,11 @@ pub fn run(args: Vec<String>) {
 
     // The same launcher the TUI uses: plain `ssh`, or whatever wrapper Settings
     // names, so both ways in behave identically.
-    let launcher = crate::settings::load().ssh_argv();
+    let settings = crate::settings::load();
+    let launcher = settings.ssh_argv();
     let (program, leading) = launcher.split_first().expect("ssh_argv is never empty");
     let program = program.clone();
+    let keepalive = keepalive_args(&args[0], &args[1..], settings.keepalive);
     let forward = match crate::paste::serve_for(&args[0]) {
         Ok(forward) => forward,
         Err(e) => {
@@ -37,6 +39,7 @@ pub fn run(args: Vec<String>) {
         }
     };
     let mut argv: Vec<String> = leading.iter().cloned().chain(args).collect();
+    argv.splice(leading.len()..leading.len(), keepalive);
 
     #[cfg(unix)]
     {
@@ -60,6 +63,38 @@ pub fn run(args: Vec<String>) {
             Err(e) => could_not_run(&program, &e),
         }
     }
+}
+
+/// `-o ServerAliveInterval=<seconds>` for a login to `dest`, so ssh hangs up on
+/// a host that stopped answering instead of waiting on a dead connection until
+/// TCP gives up. Empty when `seconds` is 0, when `args` (the user's own ssh
+/// flags) pass it with `-o`, or when the config sets it for that host.
+pub(crate) fn keepalive_args(dest: &str, args: &[String], seconds: u64) -> Vec<String> {
+    let named = || {
+        let mut flags = args.iter();
+        while let Some(a) = flags.next() {
+            let value = match a.strip_prefix("-o") {
+                Some("") => flags.next().map_or("", String::as_str),
+                Some(v) => v,
+                None => continue,
+            };
+            if value
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("serveraliveinterval")
+            {
+                return true;
+            }
+        }
+        false
+    };
+    // ssh matches `Host` patterns against what follows the login name.
+    let host = dest.strip_prefix("ssh://").unwrap_or(dest);
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    if seconds == 0 || named() || crate::sshcfg::sets_server_alive(host) {
+        return Vec::new();
+    }
+    vec!["-o".into(), format!("ServerAliveInterval={seconds}")]
 }
 
 /// Run ssh as a child and return the exit code a shell would report for it,

@@ -160,6 +160,8 @@ pub(crate) enum Action {
         /// client has to be wrapped. Captured when the wizard opens, because
         /// the preview cannot read `~/.ssh/config` for itself.
         forced_command: bool,
+        /// The kept mount this wizard is rewriting, when it is not making one.
+        editing: Option<EditedMount>,
     },
     /// Change one typed setting; cycled ones never open a wizard.
     EditSetting {
@@ -181,6 +183,14 @@ pub(crate) struct Edited {
     pub(crate) spec: String,
     pub(crate) host: String,
     pub(crate) pid: Option<u32>,
+}
+
+/// The kept mount a mount wizard is rewriting: the mountpoint its line is
+/// keyed by, and whether it is mounted there now.
+#[derive(Clone)]
+pub(crate) struct EditedMount {
+    pub(crate) local: String,
+    pub(crate) on: bool,
 }
 
 /// A modal wizard: a titled stack of fields plus the action to run on submit.
@@ -267,6 +277,7 @@ impl Prompt {
             action: Action::Mount {
                 host: host.clone(),
                 forced_command,
+                editing: None,
             },
             fields: vec![
                 Field::new("Remote path", "~ (home)"),
@@ -282,6 +293,37 @@ impl Prompt {
                     .shown_when(2, &[1]),
             ],
         }
+    }
+
+    /// The mount wizard over a mount you keep, filled in from its line. The
+    /// login (`pi@raspi`) is the row's answer, so it is carried rather than asked.
+    pub(super) fn edit_mount(m: &mounts::Mount, settings: &Settings) -> Self {
+        let forced_command = sshcfg::forces_command(m.host());
+        let mut p = Self::mount(m.host().to_string(), forced_command, settings);
+        p.title = format!(
+            "edit mount {} on {} (sshfs)",
+            m.source(),
+            sshcfg::collapse_tilde(&m.local)
+        );
+        p.action = Action::Mount {
+            host: m.source().to_string(),
+            forced_command,
+            editing: Some(EditedMount {
+                local: m.local.clone(),
+                on: m.on,
+            }),
+        };
+        // A blank Remote path is the login home, which is what `~` means here.
+        p.fields[0].value = match m.home_relative().as_str() {
+            "~" => String::new(),
+            path => path.to_string(),
+        };
+        p.fields[1].value = sshcfg::collapse_tilde(&m.local);
+        if let Some(server) = &m.sudo {
+            p.fields[2].choice = 1;
+            p.fields[3].value = server.clone();
+        }
+        p
     }
 
     /// The tunnel wizard, one form for every direction and both ways in: `t`
@@ -436,6 +478,7 @@ impl Prompt {
             Action::Mount {
                 host,
                 forced_command,
+                ..
             } => {
                 // The same spec the run path builds, with `~` put back the way you
                 // typed it: an absolute home path is unreadable in a box this wide.

@@ -14,6 +14,10 @@ categories = ["command-line-utilities", "network-programming"]
 # URLs, never read out of the package, so shipping them would only bloat every download.
 exclude = ["readme-assets/", "demo/"]
 
+# The programs essh starts, for tools that ask what an install needs beside its libraries.
+[package.metadata]
+runs = ["ssh", "scp", "ssh-keygen", "ssh-add", "ssh-copy-id", "rsync", "sshfs", "fusermount", "umount", "getent", "kill", "wl-copy", "wl-paste", "xclip", "xsel", "pbcopy", "pngpaste"]
+
 # The crate is `easyssh`, but the command you type is the shorter `essh`
 # (ssh + one letter - muscle memory carries, no dangerous typo of real `ssh`).
 [[bin]]

@@ -59,7 +59,10 @@ What it prints:
             be asked
 
 A connect hands the terminal to ssh, so stdout, stderr and the exit code are
-ssh's own. Everything else prints its result on stdout and its errors on stderr,
+ssh's own. It adds `-o ServerAliveInterval=15` unless your ssh config or your
+flags set one (`keepalive` in ~/.config/easyssh/settings, `off` drops it), so a
+login whose host stops answering exits 255 after about a minute instead of
+hanging. Everything else prints its result on stdout and its errors on stderr,
 exiting 1 on a failure: the `ls` commands print a table for people, or with
 --json an array whose field names are fixed; `check` prints one word and exits 0
 only for ok; a command that changes something prints one line per step, and -n

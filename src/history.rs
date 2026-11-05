@@ -54,14 +54,44 @@ pub fn load() -> History {
     load_from(&path())
 }
 
+/// What one stamp wrote and what it replaced, for `unrecord`.
+pub struct Stamp {
+    alias: String,
+    at: u64,
+    before: Option<Entry>,
+}
+
 /// Stamp a connect. Best-effort: a history we cannot write is not worth
-/// interrupting a connect over, so every failure here is silent.
-pub fn record(alias: &str) {
+/// interrupting a connect over, so every failure here is silent, and `None`
+/// means nothing was written.
+pub fn record(alias: &str) -> Option<Stamp> {
     let p = path();
     if let Some(dir) = p.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let _ = record_in(&p, alias, now());
+    let at = now();
+    let before = record_in(&p, alias, at).ok()?;
+    Some(Stamp {
+        alias: alias.to_string(),
+        at,
+        before,
+    })
+}
+
+/// Take a stamp back, for a login that never got as far as a session: a failed
+/// connect leaves the ordering as it was. A newer stamp from another essh is
+/// left alone.
+pub fn unrecord(stamp: Stamp) {
+    let p = path();
+    let mut h = load_from(&p);
+    if h.get(&stamp.alias).is_none_or(|e| e.last != stamp.at) {
+        return;
+    }
+    match stamp.before {
+        Some(e) => h.entries.insert(stamp.alias, e),
+        None => h.entries.remove(&stamp.alias),
+    };
+    let _ = write_to(&p, &h);
 }
 
 /// Parse the store. Unreadable file, unparseable line: both mean "no history",
@@ -86,14 +116,20 @@ pub fn load_from(path: &Path) -> History {
     History { entries }
 }
 
-/// Read-modify-write one alias. Takes the path and the clock so tests can drive
-/// it against a temp file without touching the real state dir.
-pub fn record_in(path: &Path, alias: &str, at: u64) -> std::io::Result<()> {
+/// Read-modify-write one alias, returning what it had before. Takes the path and
+/// the clock so tests can drive it against a temp file without touching the
+/// real state dir.
+pub fn record_in(path: &Path, alias: &str, at: u64) -> std::io::Result<Option<Entry>> {
     let mut h = load_from(path);
+    let before = h.get(alias);
     let e = h.entries.entry(alias.to_string()).or_default();
     e.last = at;
     e.count += 1;
+    write_to(path, &h)?;
+    Ok(before)
+}
 
+fn write_to(path: &Path, h: &History) -> std::io::Result<()> {
     // Sorted output so the file is diffable and the order never depends on the
     // hash map's iteration order.
     let mut rows: Vec<(&String, &Entry)> = h.entries.iter().collect();

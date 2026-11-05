@@ -128,6 +128,56 @@ pub(crate) fn said(text: &str) -> String {
         .join("\n")
 }
 
+/// How a login that exited 255 ended, by what ssh printed on its way out.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Ending {
+    /// The session was up when the connection went away, and ssh's lines say how.
+    Lost(String),
+    /// The session was up and was closed from this side, with `~.`.
+    Closed,
+    /// Nothing shows a session ever started, so the login itself failed.
+    NoSession,
+}
+
+/// Read the stderr of a login that exited 255. The lines that make it `Lost`
+/// come only from ssh's session loop (`Read from remote host` is followed by
+/// `Connection to … closed.`, so it is checked first), and `kex_exchange_identification` only
+/// from a connection that died before one, which also covers a ProxyJump's
+/// `ssh -W` printing its own session loop's words into the same stderr.
+pub(crate) fn ending(said: &str) -> Ending {
+    let lines: Vec<&str> = said
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines
+        .iter()
+        .any(|l| l.contains("kex_exchange_identification"))
+    {
+        return Ending::NoSession;
+    }
+    let lost: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| {
+            (l.starts_with("Timeout, server ") && l.contains(" not responding"))
+                || l.starts_with("client_loop: ")
+                || l.starts_with("Read from remote host ")
+                || (l.starts_with("Connection to ") && l.contains(" closed by remote host"))
+        })
+        .collect();
+    if !lost.is_empty() {
+        return Ending::Lost(lost[lost.len().saturating_sub(5)..].join("\n"));
+    }
+    if lines
+        .iter()
+        .any(|l| l.starts_with("Connection to ") && l.ends_with(" closed."))
+    {
+        return Ending::Closed;
+    }
+    Ending::NoSession
+}
+
 /// Pull the value of `-R '<target>'` (or `-R <target>`) out of ssh's message.
 pub(super) fn parse_r_target(text: &str) -> Option<String> {
     let after = text
@@ -281,6 +331,17 @@ impl App {
                 self.alert("no answer", format!("{why}\n\n{cmd}\n\n{said}"))
             }
         }
+    }
+
+    /// The box for a login whose connection went away under it, with `cmd` as
+    /// it ran and `said`, ssh's own lines.
+    pub(super) fn explain_lost(&mut self, host: &str, cmd: &str, said: &str) {
+        self.alert(
+            "connection lost",
+            format!(
+                "the connection to {host} dropped while you were logged in: the network went away, or {host} did. Press ↵ on {host} to connect again once it answers.\n\n{cmd}\n\n{said}"
+            ),
+        );
     }
 
     /// Open the picker of hosts to add `key` to `target` through, its jump
