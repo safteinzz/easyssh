@@ -341,25 +341,26 @@ impl App {
                     self.set_failed(msg);
                     return None;
                 };
-                if self.hosts.is_empty() {
-                    self.set_failed("no hosts in ~/.ssh/config to copy to");
+                // ssh-copy-id writes into the authorized_keys of whoever you log
+                // in as, so the login the alias resolves to is shown beside it:
+                // `admin@box` and `pi@box` are two different files.
+                let hosts: Vec<&Host> = self.listed_hosts().collect();
+                let width = hosts.iter().map(|h| h.alias.len()).max().unwrap_or(0);
+                let items: Vec<String> = hosts
+                    .iter()
+                    .map(|h| format!("{:width$}  {}", h.alias, h.target()))
+                    .collect();
+                if items.is_empty() {
+                    self.set_failed("no other machine in ~/.ssh/config to copy to");
                     return None;
                 }
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                // ssh-copy-id writes into the authorized_keys of whoever you log
-                // in as, so the login the alias resolves to is shown beside it:
-                // `admin@box` and `pi@box` are two different files.
-                let width = self.hosts.iter().map(|h| h.alias.len()).max().unwrap_or(0);
                 self.picker = Some(Picker {
                     title: format!("Install '{name}.pub' in whose authorized_keys? (ssh-copy-id)"),
-                    items: self
-                        .hosts
-                        .iter()
-                        .map(|h| format!("{:width$}  {}", h.alias, h.target()))
-                        .collect(),
+                    items,
                     idx: 0,
                     action: PickerAction::CopyKeyTo { key: path },
                 });

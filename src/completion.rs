@@ -5,7 +5,8 @@
 //! does the `alias:path` of `ls` minus the local side.
 
 use crate::commands::cp::remote_alias;
-use crate::sshcfg;
+use crate::machine::ThisMachine;
+use crate::{settings, sshcfg};
 use clap_complete::env::{Bash, Elvish, EnvCompleter, Fish, Powershell, Shells, Zsh};
 use clap_complete::{CompletionCandidate, PathCompleter, engine::ValueCompleter};
 use std::ffi::{OsStr, OsString};
@@ -45,10 +46,13 @@ pub fn write_registration(
     completer.write_registration("COMPLETE", cmd.get_name(), bin, &me.to_string_lossy(), buf)
 }
 
-/// Every alias in the config, for the destination word.
+/// Every alias `essh ls` lists, which leaves out the machine you are on unless
+/// `show_self` is on, for the destination word and every host argument.
 pub fn hosts() -> Vec<CompletionCandidate> {
+    let (show_self, here) = (settings::load().show_self, ThisMachine::read());
     sshcfg::list_hosts()
         .into_iter()
+        .filter(|h| show_self || !here.is(h))
         .map(|h| CompletionCandidate::new(&h.alias).help(Some(h.target().into())))
         .collect()
 }

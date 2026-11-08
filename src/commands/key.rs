@@ -4,8 +4,9 @@
 //! a host that takes keys only.
 
 use super::{DryRun, Json, fail, json_array, json_str, run_tool, step};
+use crate::machine::ThisMachine;
 use crate::sshcfg::{self, collapse_tilde};
-use crate::{keys, tui::mount_spec::shell_join};
+use crate::{keys, settings, tui::mount_spec::shell_join};
 use std::path::PathBuf;
 
 #[derive(clap::Subcommand)]
@@ -65,7 +66,8 @@ pub fn run(cmd: Cmd) {
 fn list(json: bool) {
     let agent = keys::agent();
     let mut all = keys::list_with(&agent);
-    keys::link_hosts(&mut all, &sshcfg::list_hosts());
+    let hosts = sshcfg::list_hosts();
+    keys::link_hosts(&mut all, &hosts);
     if json {
         let rows: Vec<String> = all
             .iter()
@@ -107,6 +109,13 @@ fn list(json: bool) {
         .unwrap_or(0)
         .min(keys::NAME_COLUMN_MAX);
     let kind_w = all.iter().map(|k| k.kind.len()).max().unwrap_or(0);
+    // The aliases the table names, which are the ones `essh ls` lists.
+    let (show_self, here) = (settings::load().show_self, ThisMachine::read());
+    let listed: Vec<&str> = hosts
+        .iter()
+        .filter(|h| show_self || !here.is(h))
+        .map(|h| h.alias.as_str())
+        .collect();
     for k in &all {
         let mut marks = Vec::new();
         if k.path.is_none() {
@@ -117,10 +126,16 @@ fn list(json: bool) {
         if k.encrypted {
             marks.push("passphrase");
         }
-        let used = if k.used_by.is_empty() {
+        let used_by: Vec<&str> = k
+            .used_by
+            .iter()
+            .map(String::as_str)
+            .filter(|a| listed.contains(a))
+            .collect();
+        let used = if used_by.is_empty() {
             String::new()
         } else {
-            format!("  used by {}", k.used_by.join(", "))
+            format!("  used by {}", used_by.join(", "))
         };
         println!(
             "{:name_w$}  {:kind_w$}  {}{used}",

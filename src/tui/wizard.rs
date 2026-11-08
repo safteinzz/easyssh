@@ -40,9 +40,9 @@ impl App {
             } else if label == "Host" {
                 // The host a forward runs over is another entry in this same
                 // config, so it is picked rather than spelled out again.
-                let items: Vec<String> = self.hosts.iter().map(|h| h.alias.clone()).collect();
+                let items: Vec<String> = self.listed_hosts().map(|h| h.alias.clone()).collect();
                 if items.is_empty() {
-                    self.set_failed("no hosts in ~/.ssh/config to forward through");
+                    self.set_failed("no other machine in ~/.ssh/config to forward through");
                 } else {
                     self.picker = Some(Picker {
                         title: "Which host carries this forward?".into(),
@@ -54,9 +54,9 @@ impl App {
             } else if label.contains("ProxyJump") {
                 // A jump host is another entry in this same config, so it is
                 // picked from the list rather than spelled out again.
-                let items: Vec<String> = self.hosts.iter().map(|h| h.alias.clone()).collect();
+                let items: Vec<String> = self.listed_hosts().map(|h| h.alias.clone()).collect();
                 if items.is_empty() {
-                    self.set_failed("no hosts in ~/.ssh/config to jump through");
+                    self.set_failed("no other machine in ~/.ssh/config to jump through");
                 } else {
                     self.picker = Some(Picker {
                         title: "Which host does ssh hop through? (ProxyJump)".into(),
@@ -161,6 +161,10 @@ impl App {
         if let Some(alias) = selected {
             self.select_host(&alias);
         }
+        let n = self.tunnel_rows().len();
+        Self::clamp(&mut self.tunnel_state, n);
+        let n = self.mount_rows().len();
+        Self::clamp(&mut self.mount_state, n);
     }
 
     /// A destination pasted into the add-host Alias field (`deploy@10.0.0.4:2222`,

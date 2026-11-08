@@ -187,9 +187,10 @@ fn key_lines(app: &App) -> Vec<Line<'static>> {
     ]));
 
     lines.push(Line::raw(""));
-    lines.push(match k.used_by.is_empty() {
+    let used_by = app.used_by(k);
+    lines.push(match used_by.is_empty() {
         true => row("Used by", "no host pins it (IdentityFile)".into()),
-        false => row("Used by", k.used_by.join(", ")),
+        false => row("Used by", used_by.join(", ")),
     });
     lines
 }

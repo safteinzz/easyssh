@@ -3,12 +3,15 @@
 //! opened here is a row there and the other way round.
 
 use super::{DryRun, Json, fail, json_array, json_str, step};
+use crate::machine::ThisMachine;
 use crate::tunnels::{self, Entry, Saved};
+use crate::{settings, sshcfg};
 use clap::ArgGroup;
+use colored::Colorize;
 
 #[derive(clap::Subcommand)]
 pub enum Cmd {
-    /// Every forward you keep, on or off
+    /// Every forward you keep, on or off, but an off one through the machine you are on
     Ls(Json),
     /// Keep a forward and start it
     Add(AddArgs),
@@ -120,11 +123,12 @@ pub fn run(cmd: Cmd) {
 fn list(json: bool) {
     let rows = tunnels::entries();
     if json {
+        let (here, hosts) = (ThisMachine::read(), sshcfg::list_hosts());
         let rows: Vec<String> = rows
             .iter()
             .map(|e| {
                 format!(
-                    "{{\"name\": {}, \"flag\": {}, \"spec\": {}, \"host\": {}, \"state\": {}, \"pid\": {}, \"command\": {}}}",
+                    "{{\"name\": {}, \"flag\": {}, \"spec\": {}, \"host\": {}, \"state\": {}, \"pid\": {}, \"command\": {}, \"self\": {}}}",
                     json_str(&e.label()),
                     json_str(&format!("-{}", e.kind)),
                     json_str(&e.spec),
@@ -132,10 +136,21 @@ fn list(json: bool) {
                     json_str(state(e)),
                     e.pid().map_or_else(|| "null".into(), |p| p.to_string()),
                     json_str(&e.command()),
+                    here.is_dest(&e.host, &hosts),
                 )
             })
             .collect();
         println!("{}", json_array(&rows));
+        return;
+    }
+    let kept = rows.len();
+    let rows = listed(rows);
+    if kept > 0 && rows.is_empty() {
+        eprintln!(
+            "{}",
+            "Every forward you keep goes through this machine: `show_self = on` in ~/.config/easyssh/settings lists them."
+                .dimmed()
+        );
         return;
     }
     let name_w = rows
@@ -159,6 +174,18 @@ fn list(json: bool) {
 
 fn state(e: &Entry) -> &'static str {
     if e.on() { "on" } else { "off" }
+}
+
+/// The kept forwards `ls` prints and `--all` takes: all of them while
+/// `show_self` is on, and otherwise every one `ThisMachine::hides` does not.
+fn listed(rows: Vec<Entry>) -> Vec<Entry> {
+    if settings::load().show_self {
+        return rows;
+    }
+    let (here, hosts) = (ThisMachine::read(), sshcfg::list_hosts());
+    rows.into_iter()
+        .filter(|e| !here.hides(&e.host, e.on(), &hosts))
+        .collect()
 }
 
 fn add(args: AddArgs) {
@@ -267,7 +294,7 @@ fn stop(e: &Entry, dry: bool) {
 fn pick(forward: &Forward, target: Option<&str>, all: bool) -> Vec<Entry> {
     let rows = tunnels::entries();
     if all {
-        return rows;
+        return listed(rows);
     }
     let target = target.unwrap_or_default();
     if let Some((kind, spec)) = forward.get() {

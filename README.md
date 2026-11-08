@@ -107,7 +107,7 @@ Everything under `~/.config/easyssh` can live in your dotfiles.
 ## Notes
 
 - It never stores your keys or passwords: the real `ssh` tools and your agent do the work.
-- The host you are on is left out of Hosts and `essh ls`, so every machine can share one `~/.ssh/config`, and `Show self` in Settings lists it again.
+- The host you are on is left out of every list, picker and Tab completion, and so are the tunnels and mounts through it while they are off, so every machine can share one `~/.ssh/config` and `~/.config/easyssh`. `Show self` in Settings lists them again.
 - A login whose host stops answering hangs up after about a minute instead of freezing, and the toolbox says the connection was lost: essh adds `ServerAliveInterval=15` unless your config sets one, and `Keepalive` in Settings changes it.
 - Yanking needs `wl-copy`, `xclip`, `xsel` or `pbcopy` on PATH; it names the one it used and installs nothing.
 - `essh cp` copies with rsync, one progress line for the whole copy, when it is on both machines and the destination is a folder, and with scp otherwise.

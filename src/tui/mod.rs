@@ -191,9 +191,9 @@ pub(super) struct App {
     pub(super) copy_check: Option<connect::CopyCheck>,
     /// The aliases that get image paste (`~/.config/easyssh/paste`).
     pub(super) paste: Vec<String>,
-    /// The aliases that log in to the machine essh runs on, which Hosts leaves
-    /// out unless `show_self` is on.
-    pub(super) this_machine: Vec<String>,
+    /// The machine essh runs on, which the lists leave out unless `show_self`
+    /// is on.
+    pub(super) here: ThisMachine,
     /// The choices that are yours rather than ssh's.
     pub(super) settings: Settings,
     pub(super) settings_state: ListState,
@@ -236,7 +236,7 @@ impl App {
             new_mount: None,
             copy_check: None,
             paste: Vec::new(),
-            this_machine: Vec::new(),
+            here: ThisMachine::default(),
             settings: Settings::default(),
             settings_state: ListState::default(),
         }
@@ -321,13 +321,7 @@ impl App {
         // Read again every time, because a login started from any other essh
         // moves its host too.
         self.history = history::load();
-        let here = ThisMachine::read();
-        self.this_machine = self
-            .hosts
-            .iter()
-            .filter(|h| here.is(h))
-            .map(|h| h.alias.clone())
-            .collect();
+        self.here = ThisMachine::read();
         self.paste = paste::enabled().into_iter().map(|e| e.alias).collect();
         self.sort_hosts();
         let n = self.host_rows().len();
@@ -444,7 +438,32 @@ impl App {
 
     /// Whether Hosts shows `h` at all, before any query.
     pub(super) fn listed(&self, h: &Host) -> bool {
-        self.settings.show_self || !self.this_machine.contains(&h.alias)
+        self.settings.show_self || !self.here.is(h)
+    }
+
+    /// The hosts Hosts lists, in its order, which are what every host picker
+    /// but ProxyJump's offers.
+    pub(super) fn listed_hosts(&self) -> impl Iterator<Item = &Host> {
+        self.hosts.iter().filter(|h| self.listed(h))
+    }
+
+    /// The hosts a key's Used by names: those of `used_by` that Hosts lists.
+    pub(super) fn used_by(&self, k: &keys::Key) -> Vec<String> {
+        k.used_by
+            .iter()
+            .filter(|a| self.listed_hosts().any(|h| &h.alias == *a))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether Tunnels shows `t` at all, before any query.
+    pub(super) fn tunnel_listed(&self, t: &tunnels::Entry) -> bool {
+        self.settings.show_self || !self.here.hides(&t.host, t.on(), &self.hosts)
+    }
+
+    /// Whether Mounts shows `m` at all, before any query.
+    pub(super) fn mount_listed(&self, m: &mounts::Mount) -> bool {
+        self.settings.show_self || !self.here.hides(m.source(), m.on, &self.hosts)
     }
 
     /// Indices into `hosts` that are listed and survive the current query.
@@ -476,26 +495,30 @@ impl App {
             .enumerate()
             .filter(|(_, k)| {
                 let name = k.name();
-                let used = k.used_by.join(" ");
+                let used = self.used_by(k).join(" ");
                 filter::matches(&self.query, &[&name, &k.kind, &k.comment, &used])
             })
             .map(|(i, _)| i)
             .collect()
     }
 
+    /// Indices into `tunnels` that are listed and survive the current query.
     pub(super) fn tunnel_rows(&self) -> Vec<usize> {
         self.tunnels
             .iter()
             .enumerate()
+            .filter(|(_, t)| self.tunnel_listed(t))
             .filter(|(_, t)| filter::matches(&self.query, &[&t.describe()]))
             .map(|(i, _)| i)
             .collect()
     }
 
+    /// Indices into `mounts` that are listed and survive the current query.
     pub(super) fn mount_rows(&self) -> Vec<usize> {
         self.mounts
             .iter()
             .enumerate()
+            .filter(|(_, m)| self.mount_listed(m))
             .filter(|(_, m)| filter::matches(&self.query, &[&m.describe()]))
             .map(|(i, _)| i)
             .collect()

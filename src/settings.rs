@@ -28,8 +28,10 @@ pub struct Settings {
     /// How long a probe waits for the TCP handshake, in seconds.
     pub probe_timeout: u64,
     pub host_order: HostOrder,
-    /// Whether Hosts and `essh ls` show the host that is the machine essh runs
-    /// on (`machine::ThisMachine`).
+    /// Whether the lists, the pickers and Tab completion, in the toolbox and
+    /// the commands, show the host that is the machine essh runs on
+    /// (`machine::ThisMachine`) and the tunnels and mounts through it that are
+    /// off.
     pub show_self: bool,
     /// What runs an interactive login. `ssh`, or a wrapper like `kitten ssh`.
     pub ssh_command: String,
@@ -66,7 +68,7 @@ impl Default for Settings {
 pub enum Group {
     /// Always in force.
     Behaviour,
-    /// Which hosts Hosts and `essh ls` show, and in what order.
+    /// Which hosts the lists show, and in what order.
     Hosts,
     /// Pre-fills a wizard field; every use can still say otherwise.
     Default,
@@ -249,7 +251,7 @@ impl Settings {
                 key: "show_self",
                 group: Group::Hosts,
                 label: "Show self",
-                help: "when ~/.ssh/config has the machine you are on, whether Hosts and essh ls list it",
+                help: "when ~/.ssh/config has the machine you are on, whether it is listed: its host, and the tunnels and mounts through it while they are off",
                 value: on_off(self.show_self).into(),
                 default: on_off(d.show_self).into(),
                 choices: Some(ON_OFF),

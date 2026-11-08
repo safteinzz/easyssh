@@ -3,14 +3,17 @@
 //! emptied mountpoint.
 
 use super::{DryRun, Json, fail, json_array, json_opt, json_str, run_tool, step};
+use crate::machine::ThisMachine;
 use crate::mounts::{self, Mount};
+use crate::settings;
 use crate::sshcfg::{self, collapse_tilde};
 use crate::tui::mount_spec::{self, MountSpec, Sudo, shell_join};
+use colored::Colorize;
 use std::fs;
 
 #[derive(clap::Subcommand)]
 pub enum Cmd {
-    /// Every mount you keep, mounted or not
+    /// Every mount you keep, mounted or not, but an unmounted one of the machine you are on
     Ls(Json),
     /// Keep a mount and mount it
     Add(AddArgs),
@@ -103,25 +106,49 @@ fn state(m: &Mount) -> &'static str {
 fn list(json: bool) {
     let rows = mounts::entries();
     if json {
+        let (here, hosts) = (ThisMachine::read(), sshcfg::list_hosts());
         let rows: Vec<String> = rows
             .iter()
             .map(|m| {
                 format!(
-                    "{{\"local\": {}, \"remote\": {}, \"host\": {}, \"state\": {}, \"sudo\": {}}}",
+                    "{{\"local\": {}, \"remote\": {}, \"host\": {}, \"state\": {}, \"sudo\": {}, \"self\": {}}}",
                     json_str(&m.local),
                     json_str(&m.remote),
                     json_str(m.host()),
                     json_str(state(m)),
                     json_opt(m.sudo.as_deref()),
+                    here.is_dest(m.source(), &hosts),
                 )
             })
             .collect();
         println!("{}", json_array(&rows));
         return;
     }
+    let kept = rows.len();
+    let rows = listed(rows);
+    if kept > 0 && rows.is_empty() {
+        eprintln!(
+            "{}",
+            "Every mount you keep is a folder on this machine: `show_self = on` in ~/.config/easyssh/settings lists them."
+                .dimmed()
+        );
+        return;
+    }
     for m in &rows {
         println!("{:3}  {}", state(m), m.describe());
     }
+}
+
+/// The kept mounts `ls` prints and `--all` takes: all of them while
+/// `show_self` is on, and otherwise every one `ThisMachine::hides` does not.
+fn listed(rows: Vec<Mount>) -> Vec<Mount> {
+    if settings::load().show_self {
+        return rows;
+    }
+    let (here, hosts) = (ThisMachine::read(), sshcfg::list_hosts());
+    rows.into_iter()
+        .filter(|m| !here.hides(m.source(), m.on, &hosts))
+        .collect()
 }
 
 fn add(args: AddArgs) {
@@ -254,7 +281,7 @@ fn same_folder(kept: &str, typed: &str) -> bool {
 fn pick(local: Option<&str>, all: bool) -> Vec<Mount> {
     let rows = mounts::entries();
     if all {
-        return rows;
+        return listed(rows);
     }
     let local = local.unwrap_or_default();
     let found: Vec<Mount> = rows

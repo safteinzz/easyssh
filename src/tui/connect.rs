@@ -251,7 +251,7 @@ impl App {
                 ..Default::default()
             });
         }
-        if self.hosts.iter().all(|h| h.alias == dest) {
+        if self.listed_hosts().all(|h| h.alias == dest) {
             self.set_failed(format!(
                 "{dest} accepts keys only and none of yours, and there is no other host here to go through"
             ));
@@ -363,7 +363,7 @@ impl App {
                 let hop = hop.rsplit_once('@').map_or(hop, |(_, h)| h);
                 hop.split(':').next().unwrap_or(hop).to_string()
             });
-        let mut hosts: Vec<&Host> = self.hosts.iter().filter(|h| h.alias != target).collect();
+        let mut hosts: Vec<&Host> = self.listed_hosts().filter(|h| h.alias != target).collect();
         hosts.sort_by_key(|h| Some(&h.alias) != jump.as_ref());
         let width = hosts.iter().map(|h| h.alias.len()).max().unwrap_or(0);
         self.picker = Some(Picker {

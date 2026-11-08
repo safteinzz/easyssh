@@ -50,6 +50,9 @@ const AFTER: &str = concat!(
     "\
 What it prints:
   on, off   a kept tunnel or mount is running or not (`state` in --json)
+  self      the machine you are on: the `ls` tables leave out its host, and the
+            tunnels and mounts through it that are off, unless `show_self = on`
+            in ~/.config/easyssh/settings, and --json keeps them, marked `self`
   check     ok · password · keys-only · key-changed · too-many-keys · refused
             · unresolved · unreachable · failed
   key ls    `agent: not running`, `agent: empty`, `agent: N keys` or `agent:
@@ -67,7 +70,7 @@ exiting 1 on a failure: the `ls` commands print a table for people, or with
 --json an array whose field names are fixed; `check` prints one word and exits 0
 only for ok; a command that changes something prints one line per step, and -n
 prints the same lines and changes nothing; `on` and `off` take --all for every
-kept one. Nothing asks except ssh's own tools:
+kept one `ls` lists. Nothing asks except ssh's own tools:
 a password for a connect, a mount or `key install`, and a passphrase for
 `key new` without --no-passphrase.
 Run `essh <command> --help` for a command's details.",
@@ -127,7 +130,7 @@ enum Cmd {
     #[command(verbatim_doc_comment, subcommand)]
     Host(commands::host::Cmd),
     /// Keep port forwards and turn them on and off, like the Tunnels tab  <COMMAND>
-    ///   tunnel ls                                          every forward you keep (--json)
+    ///   tunnel ls                                          every forward you keep but this machine's (--json)
     ///   tunnel add <-L <SPEC>|-R <SPEC>|-D <SPEC>> <HOST>  keep it and start it (--name)
     ///   tunnel on [NAME]                                   start it, NAME as `tunnel ls` prints it
     ///   tunnel off [NAME]                                  stop it and keep its line
@@ -135,7 +138,7 @@ enum Cmd {
     #[command(verbatim_doc_comment, subcommand)]
     Tunnel(commands::tunnel::Cmd),
     /// Keep sshfs mounts and mount and unmount them, like the Mounts tab  <COMMAND>
-    ///   mount ls                         every mount you keep (--json)
+    ///   mount ls                         every mount you keep but this machine's (--json)
     ///   mount add <HOST[:PATH]> [LOCAL]  keep it and mount it (--sudo to mount as root)
     ///   mount on [LOCAL]                 mount it, LOCAL as `mount ls` prints it
     ///   mount off [LOCAL]                unmount it and keep its line (--lazy when busy)

@@ -90,7 +90,7 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
     match app.view {
         View::Hosts => {
             let rows = app.host_rows();
-            let total = app.hosts.iter().filter(|h| app.listed(h)).count();
+            let total = app.listed_hosts().count();
             let when_empty = if app.hosts.is_empty() {
                 "No hosts in ~/.ssh/config yet.\nPress `c` to add one."
             } else {
@@ -209,12 +209,13 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
 
         View::Tunnels => {
             let rows = app.tunnel_rows();
-            if let Some(msg) = nothing_here(
-                app,
-                app.tunnels.len(),
-                rows.len(),
-                "No tunnels yet.\nPress `c` here, or `t` (reach) / `T` (expose) on a host.",
-            ) {
+            let total = app.tunnels.iter().filter(|t| app.tunnel_listed(t)).count();
+            let when_empty = if app.tunnels.is_empty() {
+                "No tunnels yet.\nPress `c` here, or `t` (reach) / `T` (expose) on a host."
+            } else {
+                "Every forward you keep goes through this machine.\nPress `c` to add one, or turn on Show self in Settings."
+            };
+            if let Some(msg) = nothing_here(app, total, rows.len(), when_empty) {
                 empty(f, area, "Tunnels", &msg);
                 return;
             }
@@ -256,7 +257,7 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                 })
                 .collect();
             let list = List::new(items)
-                .block(counted("Tunnels", rows.len(), app.tunnels.len()))
+                .block(counted("Tunnels", rows.len(), total))
                 .highlight_style(sel)
                 .highlight_symbol("▸ ");
             f.render_stateful_widget(list, area, &mut app.tunnel_state);
@@ -265,12 +266,13 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
 
         View::Mounts => {
             let rows = app.mount_rows();
-            if let Some(msg) = nothing_here(
-                app,
-                app.mounts.len(),
-                rows.len(),
-                "No sshfs mounts.\nMount one from the Hosts tab with `m`.",
-            ) {
+            let total = app.mounts.iter().filter(|m| app.mount_listed(m)).count();
+            let when_empty = if app.mounts.is_empty() {
+                "No sshfs mounts.\nMount one from the Hosts tab with `m`."
+            } else {
+                "Every mount you keep is a folder on this machine.\nMount one from the Hosts tab with `m`, or turn on Show self in Settings."
+            };
+            if let Some(msg) = nothing_here(app, total, rows.len(), when_empty) {
                 empty(f, area, "Mounts", &msg);
                 return;
             }
@@ -290,7 +292,7 @@ pub(super) fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
                 })
                 .collect();
             let list = List::new(items)
-                .block(counted("Mounts", rows.len(), app.mounts.len()))
+                .block(counted("Mounts", rows.len(), total))
                 .highlight_style(sel)
                 .highlight_symbol("▸ ");
             f.render_stateful_widget(list, area, &mut app.mount_state);

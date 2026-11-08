@@ -1,5 +1,6 @@
-//! Which hosts in the config are the machine essh is running on, so one
-//! `~/.ssh/config` shared between machines does not list each of them to itself.
+//! Which hosts in the config are the machine essh is running on, so a
+//! `~/.ssh/config` and a `~/.config/easyssh` shared between machines do not
+//! list each machine, or the tunnels and mounts through it, to itself.
 //!
 //! Decided from this machine's own name and addresses, never a lookup: listing
 //! hosts must not wait on DNS.
@@ -8,6 +9,8 @@ use crate::sshcfg::Host;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+/// This machine's name and addresses. The default has neither, so no host is it.
+#[derive(Default)]
 pub struct ThisMachine {
     /// The kernel's hostname up to its first dot, lowercased; empty when it is
     /// `localhost`, which every machine answers to.
@@ -42,6 +45,24 @@ impl ThisMachine {
             .into_iter()
             .flatten()
             .any(|target| self.answers_to(target))
+    }
+
+    /// Whether `ssh <dest>` logs in here, for the `[user@]host` a tunnel or a
+    /// mount goes through: by the config's entry when `host` is an alias in
+    /// `hosts`, and by the name ssh dials when it is not.
+    pub fn is_dest(&self, dest: &str, hosts: &[Host]) -> bool {
+        let name = dest.rsplit_once('@').map_or(dest, |(_, host)| host);
+        match hosts.iter().find(|h| h.alias == name) {
+            Some(h) => self.is(h),
+            None => self.answers_to(name),
+        }
+    }
+
+    /// Whether the lists leave out a kept tunnel or mount through `dest`
+    /// wherever they leave out this machine's host. One that is running stays,
+    /// because it is a process on this machine and its row is how you stop it.
+    pub fn hides(&self, dest: &str, running: bool, hosts: &[Host]) -> bool {
+        !running && self.is_dest(dest, hosts)
     }
 
     fn answers_to(&self, target: &str) -> bool {
