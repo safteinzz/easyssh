@@ -1,7 +1,5 @@
 # easyssh (`essh`)
 
-> **Canonical:** [gitlab.com/safteinzz/easyssh](https://gitlab.com/safteinzz/easyssh) · **Mirror:** [github.com/safteinzz/easyssh](https://github.com/safteinzz/easyssh)
-
 <!-- desc:start -->
 stop typing flags, make ssh easy - hosts, keys, tunnels, mounts and file copies in one CLI + TUI
 <!-- desc:end -->
@@ -18,7 +16,7 @@ No cargo yet? Rust installs the same way on every distro: [rustup.rs](https://ru
 
 ## Browse and connect
 
-![The host list, a new machine added as raspi with the form, its key installed with ssh-copy-id and the password typed that once, then a login on the key alone](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/connect.gif)
+![The host list, a new machine added as raspi with the form, its key installed with ssh-copy-id and the password typed that once, then a login on the key alone](https://raw.githubusercontent.com/safteinzz/easyssh/main/readme-assets/connect.gif)
 
 Legend: green answered on its ssh port · red did not · `○` still checking · `◆` behind a jump
 
@@ -32,13 +30,13 @@ essh raspi uptime    # anything after the host goes to ssh
 
 ## Keep the forwards you use
 
-![A port forward made from raspi's row, the form building the ssh -N -L line as it is typed, then running on the Tunnels tab and switched off and back on](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/tunnels.gif)
+![A port forward made from raspi's row, the form building the ssh -N -L line as it is typed, then running on the Tunnels tab and switched off and back on](https://raw.githubusercontent.com/safteinzz/easyssh/main/readme-assets/tunnels.gif)
 
 `t` on a host opens a forward in the background (`T` the other way), and the form shows the `ssh -N` line as you type. For a web UI one port cannot carry, pick `-D` under Direction to get a SOCKS proxy through the host.
 
 ## Mount a remote folder
 
-![The mount form on raspi showing the sshfs command it will run, the mount appearing on the Mounts tab, raspi's home listed from the shell like any folder, then unmounted and mounted again with Enter](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/mount.gif)
+![The mount form on raspi showing the sshfs command it will run, the mount appearing on the Mounts tab, raspi's home listed from the shell like any folder, then unmounted and mounted again with Enter](https://raw.githubusercontent.com/safteinzz/easyssh/main/readme-assets/mount.gif)
 
 `m` on a host shows the `sshfs` line it will run, and the folder shows up like any other, `~/sshfs/raspi` here. `↵` unmounts it and mounts it again later, so there is no `fusermount -u` to forget.
 
@@ -48,13 +46,13 @@ essh raspi uptime    # anything after the host goes to ssh
 
 ## Manage keys
 
-![Keys tab showing the agent and passphrase columns](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/keys.png)
+![Keys tab showing the agent and passphrase columns](https://raw.githubusercontent.com/safteinzz/easyssh/main/readme-assets/keys.png)
 
 Whether the agent holds a key and whether it asks for a passphrase, at a glance. `c` makes one, `y` copies it, `Y` installs it on a host.
 
 ## Your defaults, not mine
 
-![Settings tab, grouped into behaviour, hosts and defaults](https://gitlab.com/safteinzz/easyssh/-/raw/main/readme-assets/settings.png)
+![Settings tab, grouped into behaviour, hosts and defaults](https://raw.githubusercontent.com/safteinzz/easyssh/main/readme-assets/settings.png)
 
 Where mounts land, host order, what runs a login and more. `↵` changes one and `d` puts it back.
 
