@@ -1,9 +1,5 @@
-<!--
-AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating picture for this repo. Optimize for completeness and precision for the agent, not for human readability. Humans read README.md instead. Do not remove detail to make this nicer, err toward more explicit, not less. FORMAT: machine-read, not a formatted human doc. Do NOT hard-wrap lines to a column width for readability; put each rule/point on ONE line, however long.
--->
+<!-- For AI agents, not people: README is for people. Every invariant and gotcha needed to change this repo, each with its one reason, telegraphic. Never how a fact was found or what changed. One point per line, never hard-wrapped. -->
 # AGENTS.md
-
-Working brief for AI coding agent, not docs for people (README covers that): invariants, gotchas and decisions needed to change *this project* correctly without rediscovering them.
 
 ## Hard rules
 
