@@ -449,9 +449,13 @@ impl Prompt {
         self.idx
     }
 
-    /// True when there is no visible field after this one, so Enter submits.
-    pub(super) fn on_last_field(&self) -> bool {
-        !(self.idx + 1..self.fields.len()).any(|i| self.visible(i))
+    /// The first visible starred field still blank, where a refused submit
+    /// puts the cursor.
+    pub(super) fn first_blank_required(&self) -> Option<usize> {
+        (0..self.fields.len()).find(|&i| {
+            let f = &self.fields[i];
+            f.required && self.visible(i) && f.value.trim().is_empty()
+        })
     }
 
     /// The exact command this wizard will run, rebuilt from the current field

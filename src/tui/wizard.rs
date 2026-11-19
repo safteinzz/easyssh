@@ -71,7 +71,7 @@ impl App {
 
         // A choice field types nothing, so the horizontal keys are free to switch
         // its answer: h/l, the arrows, and the Ctrl-chords all move it. You leave
-        // it with Tab, Enter or the vertical keys.
+        // it with Tab or the vertical keys.
         {
             let p = self.prompt.as_mut().unwrap();
             if p.fields[p.idx].is_choice() {
@@ -115,6 +115,7 @@ impl App {
             return None;
         }
         if prev {
+            self.split_pasted_target();
             let p = self.prompt.as_mut().unwrap();
             p.idx = p.step(-1);
             return None;
@@ -130,13 +131,15 @@ impl App {
                 self.prompt = None;
                 self.set_status("cancelled");
             }
+            // Submits from any field; a refusal leaves the cursor on the blank
+            // starred field it names.
             KeyCode::Enter => {
                 self.split_pasted_target();
                 let p = self.prompt.as_mut().unwrap();
-                if p.on_last_field() {
-                    return self.submit_prompt();
+                if let Some(i) = p.first_blank_required() {
+                    p.idx = i;
                 }
-                p.idx = p.step(1);
+                return self.submit_prompt();
             }
             // Everything else is typing or editing, h/j/k/l included. A choice
             // field holds no text, so stray keys must not accumulate in it.
@@ -390,7 +393,7 @@ impl App {
 
             Action::Tunnel { editing } => {
                 if let Some(problem) = prompt::tunnel_problem(&prompt.fields) {
-                    self.set_status(problem);
+                    self.set_failed(problem);
                     self.prompt = Some(prompt);
                     return None;
                 }

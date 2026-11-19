@@ -551,7 +551,7 @@ const HELP: &[HelpSection] = &[
             ("tab shift-tab", "the next, previous field"),
             ("h/l ←→", "step a ‹ choice ›"),
             ("ctrl-o", "pick a key or a host for the field"),
-            ("↵", "the next field, and submit on the last"),
+            ("↵", "submit, from any field"),
             ("esc", "cancel"),
             ("", "paste user@host:port in Alias to fill the rest"),
         ],

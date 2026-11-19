@@ -52,21 +52,18 @@ Sleep 800ms
 Type "c"
 Sleep 800ms
 Type "raspi"
-Enter
+Tab
 Type "127.0.0.6"
-Enter
+Tab
 Type "pi"
-Enter
+Tab
 Type "2222"
-Enter
+Tab
 Sleep 300ms
 Ctrl+O
 Sleep 1.2s
 Enter
 Sleep 1.2s
-Enter
-Enter
-Enter
 Enter
 Sleep 2s
 

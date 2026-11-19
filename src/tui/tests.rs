@@ -447,15 +447,10 @@ fn mount_refuses_a_comma_in_the_server_path() {
 
 #[test]
 fn mount_hides_the_server_path_until_sudo_is_picked() {
-    let mut plain = mount_prompt(0);
+    let plain = mount_prompt(0);
     assert!(
         !plain.visible(3),
         "a plain mount never needs the server path"
-    );
-    plain.idx = 2;
-    assert!(
-        plain.on_last_field(),
-        "so Enter on the rights field submits"
     );
     assert!(mount_prompt(1).visible(3), "NOPASSWD needs it");
 }

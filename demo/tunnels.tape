@@ -47,12 +47,12 @@ Sleep 800ms
 Type "t"
 Sleep 1.5s
 Type "15432"
-Enter
+Tab
 Sleep 400ms
-Enter
+Tab
 Sleep 400ms
 Type "5432"
-Enter
+Tab
 Sleep 400ms
 Type "pgdata"
 Sleep 1s

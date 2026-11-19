@@ -47,9 +47,9 @@ Sleep 800ms
 # ---- the form, and the command it builds ---------------------------------
 Type "m"
 Sleep 3s
-Enter
+Tab
 Sleep 400ms
-Enter
+Tab
 Sleep 400ms
 Enter
 Sleep 3s
